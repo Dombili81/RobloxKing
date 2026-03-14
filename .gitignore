@@ -1,0 +1,17 @@
+# Sensitive files
+cookie.txt
+bot_config.txt
+config.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env
+
+# Project specific
+output/
+*.log

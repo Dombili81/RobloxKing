@@ -1,0 +1,9 @@
+Found 1 inputs:
+Input 0: <input type="text" placeholder="Enter Item ID (e.g. 7358640123)" required="required" pattern="^[0-9]*$" class="w-full font-semibold shadow-lg lg:w-3/4 input input-md input-bordered bg-gray-900/80 focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-70 disabled:cursor-not-allowed">
+Found 6 buttons:
+Button 0: 
+Button 1: 
+Button 2: Codes
+Button 3: Tools
+Button 4: 
+Button 5: 🖼 Download Template

@@ -1,0 +1,211 @@
+import requests
+import re
+
+class RobloxScraper:
+    def __init__(self, cookie=None):
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        })
+        self.has_auth = False
+        
+        if cookie:
+            self.session.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
+            try:
+                # Fetch CSRF token
+                r = self.session.post("https://auth.roblox.com/v2/logout")
+                csrf = r.headers.get("x-csrf-token")
+                if csrf:
+                    self.session.headers["X-CSRF-TOKEN"] = csrf
+                    self.has_auth = True
+                    print("[RobloxScraper] Authenticated session started with CSRF token.")
+            except Exception as e:
+                print(f"[RobloxScraper] Failed to init authenticated session: {e}")
+
+    async def start(self):
+        return self
+
+    async def stop(self):
+        self.session.close()
+
+    async def __aenter__(self):
+        return await self.start()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.stop()
+
+    async def search_and_get_assets(self, keyword, count=5, asset_type=11):
+        asset_name = "Classic Shirt" if asset_type == 11 else "Classic Pants"
+        print(f"Searching Roblox Marketplace for: {keyword} ({asset_name}s - Headless Mode)")
+        
+        found_assets = []
+        cursor = ""
+        url = "https://catalog.roblox.com/v1/search/items/details"
+
+        # Strategy: Use category=3 (Clothing) + specific assetTypes filter
+        for page in range(4):
+            params = {
+                "keyword": keyword,
+                "category": 3,
+                "assetTypes": asset_type,
+                "limit": 30,
+                "cursor": cursor,
+                "sortType": 0
+            }
+            try:
+                response = self.session.get(url, params=params, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    listings = data.get("data", [])
+                    cursor = data.get("nextPageCursor")
+                    
+                    print(f"DEBUG: Page {page+1} scanned. Found {len(listings)} raw items.")
+                    
+                    for item in listings:
+                        if item.get("assetType") == asset_type:
+                            asset_id = str(item.get("id"))
+                            # Avoid duplicates
+                            if any(a[0] == asset_id for a in found_assets):
+                                continue
+                                
+                            item_name = item.get("name", "Asset")
+                            item_url = f"https://www.roblox.com/catalog/{asset_id}/"
+                            print(f"Adding {asset_name}: {item_name} (ID: {asset_id})")
+                            found_assets.append((asset_id, item_url))
+                            
+                else:
+                    print(f"DEBUG: Search failed (Status: {response.status_code})")
+                    break
+            except Exception as e:
+                print(f"DEBUG: Search error: {e}")
+                break
+                            
+        if found_assets:
+            return found_assets
+        
+        print(f"No Classic Shirts found for keyword: {keyword}")
+        return []
+
+    async def search_and_yield_assets(self, keyword, asset_type=11):
+        """
+        An async generator that yields (asset_id, item_url) continuously 
+        from the catalog search results until pages run out. 
+        """
+        asset_name = "Classic Shirt" if asset_type == 11 else "Classic Pants"
+        print(f"Searching Roblox Marketplace stream for: {keyword} ({asset_name}s)")
+        
+        cursor = ""
+        url = "https://catalog.roblox.com/v1/search/items/details"
+        seen_ids = set()
+
+        for page in range(10): # Deep scan capability
+            params = {
+                "keyword": keyword,
+                "category": 3,
+                "assetTypes": asset_type,
+                "limit": 30,
+                "cursor": cursor,
+                "sortType": 0
+            }
+            try:
+                response = self.session.get(url, params=params, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    listings = data.get("data", [])
+                    cursor = data.get("nextPageCursor")
+                    
+                    print(f"DEBUG: Stream Page {page+1} scanned. Found {len(listings)} raw items.")
+                    
+                    for item in listings:
+                        if item.get("assetType") == asset_type:
+                            asset_id = str(item.get("id"))
+                            if asset_id in seen_ids:
+                                continue
+                            seen_ids.add(asset_id)
+                                
+                            item_name = item.get("name", "Asset")
+                            item_url = f"https://www.roblox.com/catalog/{asset_id}/"
+                            yield (asset_id, item_url)
+                    
+                    if not cursor:
+                        break
+                else:
+                    print(f"DEBUG: Stream search failed (Status: {response.status_code})")
+                    break
+            except Exception as e:
+                print(f"DEBUG: Stream search error: {e}")
+                break
+
+    async def get_paired_pants(self, shirt_asset_id: str) -> list[tuple[str, str]]:
+        """
+        Check a shirt's description for catalog links to Classic Pants.
+        Returns a list of (asset_id, url) tuples for any paired pants found.
+        AssetType 12 = Classic Pants.
+        """
+        # 1. Fetch asset details to get description
+        try:
+            r = self.session.get(
+                f"https://economy.roblox.com/v2/assets/{shirt_asset_id}/details",
+                timeout=10,
+            )
+            if r.status_code != 200:
+                print(f"[PairedPants] Could not fetch description. Status: {r.status_code}")
+                return []
+            details = r.json()
+            description = details.get("Description") or details.get("description") or ""
+        except Exception as e:
+            print(f"[PairedPants] Could not fetch description for {shirt_asset_id}: {e}")
+            return []
+
+        if not description:
+            return []
+
+        # 2. Extract all catalog IDs from description text
+        found_ids = re.findall(r"roblox\.com/catalog/(\d+)", description)
+        if not found_ids:
+            return []
+
+        print(f"[PairedPants] Found {len(found_ids)} catalog link(s) in shirt description.")
+
+        import time
+        # 3. Verify each linked asset is Classic Pants (assetType=12)
+        pants_assets = []
+        for linked_id in found_ids:
+            print(f"  [PairedPants] Extracted ID: {linked_id}. Verifying...")
+            
+            try:
+                # Use catalog endpoint if auth available, otherwise fallback to economy v2 (with delay)
+                if self.has_auth:
+                    body = {"items": [{"itemType": "Asset", "id": linked_id}]}
+                    r2 = self.session.post("https://catalog.roblox.com/v1/catalog/items/details", json=body, timeout=10)
+                    if r2.status_code == 200:
+                        data = r2.json().get("data", [])
+                        if data:
+                            item = data[0]
+                            asset_type = item.get("assetType")
+                            name = item.get("name", f"Pants_{linked_id}")
+                            if asset_type == 12:
+                                url = f"https://www.roblox.com/catalog/{linked_id}/"
+                                print(f"[PairedPants] SUCCESS: Matched Classic Pants: {name}")
+                                pants_assets.append((linked_id, url))
+                            else:
+                                print(f"  [PairedPants] Ignored. AssetType is {asset_type} (not 12).")
+                    else:
+                        print(f"  [PairedPants] Verification failed. Status {r2.status_code}")
+                else:
+                    # Fallback
+                    time.sleep(1.5)
+                    r2 = self.session.get(f"https://economy.roblox.com/v2/assets/{linked_id}/details", timeout=10)
+                    if r2.status_code == 200:
+                        item = r2.json()
+                        asset_type = item.get("AssetTypeId")
+                        name = item.get("Name", f"Pants_{linked_id}")
+                        if asset_type == 12:
+                            url = f"https://www.roblox.com/catalog/{linked_id}/"
+                            print(f"[PairedPants] SUCCESS: Matched Classic Pants: {name}")
+                            pants_assets.append((linked_id, url))
+            except Exception as e:
+                print(f"[PairedPants] Error checking linked asset {linked_id}: {e}")
+
+        return pants_assets
+

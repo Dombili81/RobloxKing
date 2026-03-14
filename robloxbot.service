@@ -1,0 +1,16 @@
+[Unit]
+Description=Roblox Otomasyon Telegram Botu
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/robloxking
+ExecStart=/opt/robloxking/venv/bin/python bot.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
