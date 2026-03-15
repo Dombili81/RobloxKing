@@ -530,7 +530,7 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, loop, target_pairs):
 
                     # Try Method A: Direct link in description (Best)
                     try:
-                        paired_pants = await roblox.get_paired_pants(asset_id)
+                        paired_pants = await roblox.get_paired_pants(asset_id, keyword)
                     except Exception:
                         paired_pants = []
 
@@ -539,14 +539,11 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, loop, target_pairs):
                     if paired_pants:
                         pants_id, _ = paired_pants[0]
                         print(f"[Match] Found via direct link: {asset_id} <-> {pants_id}")
-                    else:
-                        # Method B: Creator matching fallback
-                        match = [p[0] for p in pants_pool if p[2] == creator and p[0] not in used_pants_ids]
-                        if match:
-                            pants_id = match[0]
-                            print(f"[Match] Found via creator fallback: {asset_id} <-> {pants_id} (Creator: {creator})")
 
                     if not pants_id:
+                        # Eğer açıklamada doğrudan link yoksa bu shirt'i tamamen atla,
+                        # böylece rastgele/uyuşmayan pantolonlarla eşleşme yapılmaz.
+                        print(f"[Match] Skipping shirt {asset_id} — no explicit paired pants link found.")
                         continue
 
                     used_pants_ids.add(pants_id)

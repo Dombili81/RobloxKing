@@ -319,9 +319,9 @@ async def main():
                     
                 print(f"\n--- Checking Shirt: {asset_id} (Tag: {keyword}) by {creator} ---")
                 
-                # Method A: Direct link in description
+                # Method A: Direct link in description (only trust explicit links)
                 try:
-                    paired_pants = await roblox.get_paired_pants(asset_id)
+                    paired_pants = await roblox.get_paired_pants(asset_id, keyword)
                 except Exception as e:
                     paired_pants = []
                     print(f"[PairedPants] Error: {e}")
@@ -333,14 +333,9 @@ async def main():
                     pants_id, pants_catalog_url = paired_pants[0]
                     print(f"  [Match] Found via direct link: {pants_id}")
                 else:
-                    # Method B: Creator matching fallback
-                    match = [(p[0], p[1]) for p in pants_pool if p[2] == creator and p[0] not in used_pants_ids]
-                    if match:
-                        pants_id, pants_catalog_url = match[0]
-                        print(f"  [Match] Found via creator fallback: {pants_id}")
+                    print("  No explicit paired pants link found in description. Skipping this shirt to avoid mismatched pairs.")
 
                 if not pants_id:
-                    print(f"  No match found (neither link nor creator fallback). Skipping.")
                     continue
                         
                 used_pants_ids.add(pants_id)

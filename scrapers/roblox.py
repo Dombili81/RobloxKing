@@ -43,6 +43,7 @@ class RobloxScraper:
         url = "https://catalog.roblox.com/v1/search/items/details"
 
         # Strategy: Use category=3 (Clothing) + specific assetTypes filter
+        # and sort by *Best Selling* so that we process top-sellers first.
         for page in range(4):
             params = {
                 "keyword": keyword,
@@ -50,7 +51,10 @@ class RobloxScraper:
                 "assetTypes": asset_type,
                 "limit": 30,
                 "cursor": cursor,
-                "sortType": 0
+                # 2 = BestSelling (Roblox catalog API)
+                "sortType": 2,
+                # 5 = AllTime aggregation (daha istikrarlı sonuçlar)
+                "sortAggregation": 5,
             }
             try:
                 response = self.session.get(url, params=params, timeout=10)
@@ -106,7 +110,9 @@ class RobloxScraper:
                 "assetTypes": asset_type,
                 "limit": 30,
                 "cursor": cursor,
-                "sortType": 0
+                # 2 = BestSelling (Roblox catalog API)
+                "sortType": 2,
+                "sortAggregation": 5,
             }
             try:
                 response = self.session.get(url, params=params, timeout=10)
@@ -138,7 +144,7 @@ class RobloxScraper:
                 print(f"DEBUG: Stream search error: {e}")
                 break
 
-    async def get_paired_pants(self, shirt_asset_id: str) -> list[tuple[str, str]]:
+    async def get_paired_pants(self, shirt_asset_id: str, keyword: str) -> list[tuple[str, str]]:
         """
         Check a shirt's description for catalog links to Classic Pants.
         Returns a list of (asset_id, url) tuples for any paired pants found.
@@ -167,6 +173,12 @@ class RobloxScraper:
         if not found_ids:
             return []
 
+        # Eğer açıklamada birden fazla farklı katalog linki varsa,
+        # yanlış/mix set riskini azaltmak için bu shirt'i tamamen atla.
+        if len(set(found_ids)) != 1:
+            print(f"[PairedPants] Multiple distinct catalog IDs in description for shirt {shirt_asset_id}. Skipping to avoid mismatched pairs.")
+            return []
+        
         print(f"[PairedPants] Found {len(found_ids)} catalog link(s) in shirt description.")
 
         import time
@@ -176,6 +188,7 @@ class RobloxScraper:
             print(f"  [PairedPants] Extracted ID: {linked_id}. Verifying...")
             
             try:
+                keyword_l = (keyword or "").lower()
                 # Use catalog endpoint if auth available, otherwise fallback to economy v2 (with delay)
                 if self.has_auth:
                     body = {"items": [{"itemType": "Asset", "id": linked_id}]}
@@ -186,7 +199,9 @@ class RobloxScraper:
                             item = data[0]
                             asset_type = item.get("assetType")
                             name = item.get("name", f"Pants_{linked_id}")
-                            if asset_type == 12:
+                            name_l = name.lower()
+                            # Hem asset tipini kontrol et, hem de isim içinde keyword geçsin
+                            if asset_type == 12 and (not keyword_l or keyword_l in name_l):
                                 url = f"https://www.roblox.com/catalog/{linked_id}/"
                                 print(f"[PairedPants] SUCCESS: Matched Classic Pants: {name}")
                                 pants_assets.append((linked_id, url))
@@ -202,7 +217,8 @@ class RobloxScraper:
                         item = r2.json()
                         asset_type = item.get("AssetTypeId")
                         name = item.get("Name", f"Pants_{linked_id}")
-                        if asset_type == 12:
+                        name_l = name.lower()
+                        if asset_type == 12 and (not keyword_l or keyword_l in name_l):
                             url = f"https://www.roblox.com/catalog/{linked_id}/"
                             print(f"[PairedPants] SUCCESS: Matched Classic Pants: {name}")
                             pants_assets.append((linked_id, url))
