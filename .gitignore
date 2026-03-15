@@ -13,6 +13,4 @@ env/
 .env
 
 # Project specific
-output/
 *.log
-    
