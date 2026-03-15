@@ -17,7 +17,11 @@ from scrapers.downloader import AssetDownloader
 from scrapers.designer   import TemplateDesigner
 from scrapers.uploader   import AssetUploader
 from scrapers.finance    import GroupFinanceMonitor
+from scrapers.firebase_db import FirebaseManager
 from main import generate_metadata, download_and_design, upload_pair_with_crosslink
+
+# ─── Firebase Init ───────────────────────────────────────────────────────────
+db_manager = FirebaseManager()
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 def load_bot_config(path="bot_config.txt"):
@@ -32,7 +36,7 @@ def load_bot_config(path="bot_config.txt"):
                 if "=" in line and not line.startswith("#"):
                     k, _, v = line.partition("=")
                     k_clean, v_clean = k.strip(), v.strip()
-                    if not cfg.get(k_clean): # Env var takes priority
+                    if v_clean: # File values overwrite Env Vars
                         cfg[k_clean] = v_clean
     return cfg
 
@@ -44,6 +48,17 @@ def load_roblox_config(path="config.txt"):
         "DELAY_MAX": int(os.environ.get("DELAY_MAX", 90)),
         "MAX_UPLOADS_PER_SESSION": int(os.environ.get("MAX_UPLOADS_PER_SESSION", 10))
     }
+    
+    # 1. First, check Firebase for persistent settings
+    cloud_settings = db_manager.load_settings()
+    for k in ["GROUP_ID", "PRICE", "DELAY_MIN", "DELAY_MAX", "MAX_UPLOADS_PER_SESSION"]:
+        if k in cloud_settings:
+            try:
+                cfg[k] = int(cloud_settings[k])
+            except ValueError:
+                pass
+
+    # 2. Then check local file (only valid if developing locally)
     if os.path.exists(path):
         with open(path) as f:
             for line in f:
@@ -51,40 +66,53 @@ def load_roblox_config(path="config.txt"):
                 if "=" in line and not line.startswith("#"):
                     k, _, v = line.partition("=")
                     k = k.strip()
-                    if k in cfg and not os.environ.get(k): # Use file only if env var is missing
+                    if k in cfg: # File always overwrites Env Vars
                         try:
-                            # Special case: don't overwrite if env var was found
-                            # but load_roblox_config is called to merge file values
-                            val = v.strip()
-                            if k == "GROUP_ID" and cfg[k] == 0: cfg[k] = int(val)
-                            elif k == "PRICE" and cfg[k] == 5: cfg[k] = int(val)
-                            elif k == "DELAY_MIN" and cfg[k] == 45: cfg[k] = int(val)
-                            elif k == "DELAY_MAX" and cfg[k] == 90: cfg[k] = int(val)
-                            elif k == "MAX_UPLOADS_PER_SESSION" and cfg[k] == 10: cfg[k] = int(val)
+                            # If the file has a default value (like GROUP_ID=0)
+                            # and env var has a real value, keep env var. Otherwise overwrite.
+                            val = int(v.strip())
+                            if val != 0 and val != 5 and val != 45 and val != 90 and val != 10:
+                                cfg[k] = val
+                            elif not os.environ.get(k): 
+                                cfg[k] = val
                         except ValueError:
                             pass
     return cfg
 
 def save_roblox_config(cfg, path="config.txt"):
+    for k, v in cfg.items():
+        if k in ["GROUP_ID", "PRICE", "DELAY_MIN", "DELAY_MAX", "MAX_UPLOADS_PER_SESSION"]:
+            db_manager.save_setting(k, v)
+
     with open(path, "w") as f:
         f.write(f"GROUP_ID={cfg['GROUP_ID']}\nPRICE={cfg['PRICE']}\n"
                 f"DELAY_MIN={cfg['DELAY_MIN']}\nDELAY_MAX={cfg['DELAY_MAX']}\n"
                 f"MAX_UPLOADS_PER_SESSION={cfg['MAX_UPLOADS_PER_SESSION']}\n")
 
 def load_cookie(path="cookie.txt"):
+    # 1. First, check Firebase
+    cloud_settings = db_manager.load_settings()
+    if cloud_settings.get("ROBLOX_COOKIE"):
+        env_cookie = cloud_settings["ROBLOX_COOKIE"]
+        if env_cookie.startswith(".ROBLOSECURITY="):
+            return env_cookie[len(".ROBLOSECURITY="):]
+        return env_cookie
+
+    # 2. Local file
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            raw = f.read().strip().strip('"').strip("'")
+            if raw:
+                if raw.startswith(".ROBLOSECURITY="):
+                    return raw[len(".ROBLOSECURITY="):]
+                return raw
+
     env_cookie = os.environ.get("ROBLOX_COOKIE")
     if env_cookie:
         if env_cookie.startswith(".ROBLOSECURITY="):
             return env_cookie[len(".ROBLOSECURITY="):]
         return env_cookie
-
-    if not os.path.exists(path):
-        return None
-    with open(path, encoding="utf-8") as f:
-        raw = f.read().strip().strip('"').strip("'")
-    if raw.startswith(".ROBLOSECURITY="):
-        raw = raw[len(".ROBLOSECURITY="):]
-    return raw
+    return None
 
 BOT_CFG    = load_bot_config()
 BOT_TOKEN  = BOT_CFG.get("BOT_TOKEN", "")
@@ -390,9 +418,11 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not cookie_val.startswith("_|WARNING:-DO-NOT-SHARE-THIS."):
             await update.message.reply_text("⚠️ *Uyarı:* Girdiğin değer normal bir Roblox Cookie'sine benzemiyor. Genelde `_|WARNING:-DO-NOT-SHARE-THIS.` ile başlar. Yine de kaydediyorum.", parse_mode="Markdown")
         
+        # Save to Firebase AND local file
+        db_manager.save_cookie(cookie_val)
         with open("cookie.txt", "w", encoding="utf-8") as f:
             f.write(cookie_val)
-        await update.message.reply_text("✅ *Cookie başarıyla kaydedildi!*", reply_markup=settings_keyboard(), parse_mode="Markdown")
+        await update.message.reply_text("✅ *Cookie başarıyla kaydedildi!*\n(Bulut veritabanlarına da işlendi)", reply_markup=settings_keyboard(), parse_mode="Markdown")
 
     else:
         # Tanımsız mesaj → Ana menüyü göster
@@ -549,11 +579,28 @@ async def live_sale_notifier_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Satış takip hatası: {e}")
 
+# ─── Dummy Web Server (For Render Free Tier) ──────────────────────────────────
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Roblox Bot is running!")
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), DummyHandler)
+    server.serve_forever()
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     if not BOT_TOKEN:
         print("HATA: bot_config.txt içinde BOT_TOKEN bulunamadı!")
         return
+        
+    threading.Thread(target=run_dummy_server, daemon=True).start()
 
     print(f"🤖 Bot başlatılıyor… (Allowed ID: {ALLOWED_ID})")
 

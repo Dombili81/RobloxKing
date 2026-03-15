@@ -8,6 +8,10 @@ from scrapers.downloader import AssetDownloader
 from scrapers.designer import TemplateDesigner
 from scrapers.uploader import AssetUploader
 from scrapers.tags import get_tags, BASE_TAGS
+from scrapers.firebase_db import FirebaseManager
+
+# --- Firebase Init ---
+db_manager = FirebaseManager()
 
 # --- Load Config ---
 def load_config(path="config.txt"):
@@ -18,6 +22,17 @@ def load_config(path="config.txt"):
         "DELAY_MAX": int(os.environ.get("DELAY_MAX", 90)),
         "MAX_UPLOADS_PER_SESSION": int(os.environ.get("MAX_UPLOADS_PER_SESSION", 10)),
     }
+    
+    # 1. First, check Firebase for persistent settings
+    cloud_settings = db_manager.load_settings()
+    for k in ["GROUP_ID", "PRICE", "DELAY_MIN", "DELAY_MAX", "MAX_UPLOADS_PER_SESSION"]:
+        if k in cloud_settings:
+            try:
+                config[k] = int(cloud_settings[k])
+            except ValueError:
+                pass
+
+    # 2. Then check local file
     if os.path.exists(path):
         with open(path, "r") as f:
             for line in f:
@@ -26,25 +41,42 @@ def load_config(path="config.txt"):
                     continue
                 key, _, val = line.partition("=")
                 key = key.strip()
-                if key in config and not os.environ.get(key): # Env takes priority
-                    config[key] = int(val.strip())
+                if key in config: # File values overwrite Env Vars
+                    try:
+                        v = int(val.strip())
+                        if v != 0 and v != 5 and v != 45 and v != 90 and v != 10:
+                            config[key] = v
+                        elif not os.environ.get(key):
+                            config[key] = v
+                    except ValueError:
+                        pass
     return config
 
 # --- Load Cookie ---
 def load_cookie(path="cookie.txt"):
+    # 1. First, check Firebase
+    cloud_settings = db_manager.load_settings()
+    if cloud_settings.get("ROBLOX_COOKIE"):
+        env_cookie = cloud_settings["ROBLOX_COOKIE"]
+        if env_cookie.startswith(".ROBLOSECURITY="):
+            return env_cookie[len(".ROBLOSECURITY="):]
+        return env_cookie
+
+    # 2. Local file
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read().strip().strip('"').strip("'")
+            if raw:
+                if raw.startswith(".ROBLOSECURITY="):
+                    return raw[len(".ROBLOSECURITY="):]
+                return raw
+
     env_cookie = os.environ.get("ROBLOX_COOKIE")
     if env_cookie:
         if env_cookie.startswith(".ROBLOSECURITY="):
             return env_cookie[len(".ROBLOSECURITY="):]
         return env_cookie
-
-    if not os.path.exists(path):
-        return None
-    with open(path, "r", encoding="utf-8") as f:
-        raw = f.read().strip().strip('"').strip("'")
-    if raw.startswith(".ROBLOSECURITY="):
-        raw = raw[len(".ROBLOSECURITY="):]
-    return raw
+    return None
 
 # ---------------------------------------------------------------------------
 # Metadata generator  (tags come from scrapers/tags.py)
