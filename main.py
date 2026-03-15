@@ -302,44 +302,60 @@ async def main():
         pairs_found = 0
         target_pairs = 5
         
+        # Step 0: Pre-fetch pants pool for fallback
+        print(f"  Preparing pants pool for creator-match fallback...")
+        pants_pool = await roblox.search_and_get_assets(keyword, count=40, asset_type=12)
+        used_pants_ids = set()
+
         try:
             # We use the generator to continually pull shirts until we find 5 valid pairs
-            async for asset_id, item_url, _ in roblox.search_and_yield_assets(keyword):
+            async for asset_id, item_url, creator in roblox.search_and_yield_assets(keyword):
                 if pairs_found >= target_pairs:
                     print(f"  Reached target of {target_pairs} pairs for '{keyword}'. Moving to next keyword.")
                     break
                     
-                print(f"\n--- Checking Shirt: {asset_id} (Tag: {keyword}) ---")
-                print(f"URL: {item_url}")
-
+                print(f"\n--- Checking Shirt: {asset_id} (Tag: {keyword}) by {creator} ---")
+                
+                # Method A: Direct link in description
                 try:
-                    # ── Auto-detect paired Classic Pants only from Shirts ──
-                    try:
-                        paired_pants = await roblox.get_paired_pants(asset_id)
-                    except Exception as e:
-                        paired_pants = []
-                        print(f"[PairedPants] Error: {e}")
+                    paired_pants = await roblox.get_paired_pants(asset_id)
+                except Exception as e:
+                    paired_pants = []
+                    print(f"[PairedPants] Error: {e}")
 
-                    if not paired_pants:
-                        print(f"  No paired pants link found in description. Skipping shirt {asset_id}.")
-                        continue
+                pants_id = None
+                pants_catalog_url = None
+
+                if paired_pants:
+                    pants_id, pants_catalog_url = paired_pants[0]
+                    print(f"  [Match] Found via direct link: {pants_id}")
+                else:
+                    # Method B: Creator matching fallback
+                    match = [(p[0], p[1]) for p in pants_pool if p[2] == creator and p[0] not in used_pants_ids]
+                    if match:
+                        pants_id, pants_catalog_url = match[0]
+                        print(f"  [Match] Found via creator fallback: {pants_id}")
+
+                if not pants_id:
+                    print(f"  No match found (neither link nor creator fallback). Skipping.")
+                    continue
                         
-                    print(f"  Paired pants found! Proceeding with shirt and pants download. (Pair {pairs_found + 1}/{target_pairs})")
-                    
+                used_pants_ids.add(pants_id)
+                print(f"  Proceeding with shirt and pants download. (Pair {pairs_found + 1}/{target_pairs})")
+                
+                try:
                     # 1. Download and design the shirt
                     shirt_out = await download_and_design(
                         asset_id, keyword, "shirt", downloader, designer
                     )
 
-                    # 2. Download and design the first paired pants only
-                    pants_id, pants_catalog_url = paired_pants[0]
-                    print(f"\n  └─ Paired Pants: {pants_id}")
-                    print(f"     URL: {pants_catalog_url}")
+                    # 2. Download and design the pants
+                    print(f"\n  └─ Paired Pants: {pants_id} - {pants_catalog_url}")
                     pants_out = await download_and_design(
                         pants_id, keyword, "pants", downloader, designer
                     )
 
-                    # 3. Upload the pair with cross-linked descriptions (if uploader active)
+                    # 3. Upload the pair (if uploader active)
                     if uploader and shirt_out and pants_out:
                         upload_count = await upload_pair_with_crosslink(
                             asset_id, shirt_out,

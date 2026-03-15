@@ -489,15 +489,38 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, loop, target_pairs):
 
         async def process_keyword():
             nonlocal pairs_found, upload_count
-            async for asset_id, item_url, _ in roblox.search_and_yield_assets(keyword):
+            
+            # Step 1: Pre-fetch a pool of pants for creator-matching fallback
+            send(f"📥 *{keyword.title()}* için pantolon havuzu hazırlanıyor...")
+            pants_pool = await roblox.search_and_get_assets(keyword, count=40, asset_type=12)
+            used_pants_ids = set()
+
+            async for asset_id, item_url, creator in roblox.search_and_yield_assets(keyword):
                 if _job_stop.is_set() or pairs_found >= target_pairs:
                     break
+                
+                # Try Method A: Direct link in description (Best)
                 try:
                     paired_pants = await roblox.get_paired_pants(asset_id)
                 except Exception:
                     paired_pants = []
-                if not paired_pants:
+                
+                pants_id = None
+                
+                if paired_pants:
+                    pants_id, _ = paired_pants[0]
+                    print(f"[Match] Found via direct link: {asset_id} <-> {pants_id}")
+                else:
+                    # Method B: Creator matching fallback
+                    match = [p[0] for p in pants_pool if p[2] == creator and p[0] not in used_pants_ids]
+                    if match:
+                        pants_id = match[0]
+                        print(f"[Match] Found via creator fallback: {asset_id} <-> {pants_id} (Creator: {creator})")
+                
+                if not pants_id:
                     continue
+                
+                used_pants_ids.add(pants_id)
 
                 pairs_found += 1
                 _job_info["pairs_done"] = pairs_found
