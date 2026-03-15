@@ -110,7 +110,7 @@ def generate_metadata(keyword: str, item_type: str, pair_url: str = "") -> tuple
 # Download + design only (no upload)
 # ---------------------------------------------------------------------------
 async def download_and_design(asset_id: str, search_tag: str, item_type: str,
-                               downloader, designer) -> str | None:
+                               downloader, designer, custom_label: str | None = None) -> str | None:
     """Download template and run design overlay. Returns output path or None."""
     print(f"Downloading {item_type} template for ID: {asset_id} ...")
     download_path = await downloader.download_template(asset_id)
@@ -118,7 +118,10 @@ async def download_and_design(asset_id: str, search_tag: str, item_type: str,
         print(f"  Failed to download {item_type} {asset_id}. Skipping.")
         return None
 
-    label = f"{search_tag.replace(' ', '_')}_{item_type}_{asset_id}.png"
+    if custom_label:
+        label = f"{custom_label}_{asset_id}.png"
+    else:
+        label = f"{search_tag.replace(' ', '_')}_{item_type}_{asset_id}.png"
     final_output = await designer.process_image(
         download_path, "template.png",
         output_dir="output", custom_filename=label

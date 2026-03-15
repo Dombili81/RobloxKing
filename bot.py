@@ -434,17 +434,39 @@ async def start_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE, keyword_list
     cookie = load_cookie()
     loop   = asyncio.get_event_loop()
 
-    async def send_fn(msg: str):
-        await update.message.reply_text(msg, parse_mode="Markdown")
-
-    await update.message.reply_text(
+    # Tek bir "durum" mesajı üzerinden ilerlemeyi gösterebilmek için
+    status_msg = await update.message.reply_text(
         f"🚀 *İş Başladı!*\n\n"
         f"🔍 Keyword(ler): `{'`, `'.join(keyword_list)}`\n"
         f"🎯 Hedef çift: `{TARGET_PAIRS}` / keyword\n\n"
-        f"📬 Gelişmeleri buradan takip edebilirsin.",
+        f"⚙️ Hazırlanıyor, lütfen bekle…",
         reply_markup=main_menu_keyboard(),
         parse_mode="Markdown"
     )
+
+    async def send_fn(msg: str, *, reply_markup=None, force_new: bool = False):
+        nonlocal status_msg
+        # Varsayılan: mevcut durum mesajını güncelle
+        try:
+            if not status_msg or force_new:
+                status_msg = await update.message.reply_text(
+                    msg,
+                    reply_markup=reply_markup or main_menu_keyboard(),
+                    parse_mode="Markdown"
+                )
+            else:
+                await status_msg.edit_text(
+                    msg,
+                    reply_markup=reply_markup or status_msg.reply_markup or main_menu_keyboard(),
+                    parse_mode="Markdown"
+                )
+        except Exception:
+            # Herhangi bir edit hatasında yedek olarak yeni mesaj gönder
+            status_msg = await update.message.reply_text(
+                msg,
+                reply_markup=reply_markup or main_menu_keyboard(),
+                parse_mode="Markdown"
+            )
 
     _job_stop.clear()
     t = threading.Thread(
@@ -456,8 +478,8 @@ async def start_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE, keyword_list
 
 # ─── Background job ──────────────────────────────────────────────────────────
 def _job_thread_fn(keyword_list, cfg, cookie, send_fn, loop, target_pairs):
-    def send(msg):
-        asyncio.run_coroutine_threadsafe(send_fn(msg), loop)
+    def send(msg, **kwargs):
+        asyncio.run_coroutine_threadsafe(send_fn(msg, **kwargs), loop)
 
     try:
         global _job_info
@@ -482,32 +504,38 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, loop, target_pairs):
         upload_count = 0
 
         for keyword in keyword_list:
-            if _job_stop.is_set(): break
-            send(f"🔍 *{keyword.title()}* için tarama başlıyor…")
+            if _job_stop.is_set():
+                break
+
+            send(
+                f"🔍 *{keyword.title()}* için arama başlatıldı…\n\n"
+                f"• 👕 Uygun shirt/pants çiftleri aranıyor\n"
+                f"• 🎯 Hedef çift sayısı: `{target_pairs}`\n\n"
+                f"⏳ İlk sonuçlar bulununca burada göreceksin."
+            )
             pairs_found = 0
 
             inner_loop = asyncio.new_event_loop()
 
             async def process_keyword():
                 nonlocal pairs_found, upload_count
-                
+
                 # Step 1: Pre-fetch a pool of pants for creator-matching fallback
-                send(f"📥 *{keyword.title()}* için pantolon havuzu hazırlanıyor...")
                 pants_pool = await roblox.search_and_get_assets(keyword, count=40, asset_type=12)
                 used_pants_ids = set()
 
                 async for asset_id, item_url, creator in roblox.search_and_yield_assets(keyword):
                     if _job_stop.is_set() or pairs_found >= target_pairs:
                         break
-                    
+
                     # Try Method A: Direct link in description (Best)
                     try:
                         paired_pants = await roblox.get_paired_pants(asset_id)
                     except Exception:
                         paired_pants = []
-                    
+
                     pants_id = None
-                    
+
                     if paired_pants:
                         pants_id, _ = paired_pants[0]
                         print(f"[Match] Found via direct link: {asset_id} <-> {pants_id}")
@@ -517,30 +545,45 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, loop, target_pairs):
                         if match:
                             pants_id = match[0]
                             print(f"[Match] Found via creator fallback: {asset_id} <-> {pants_id} (Creator: {creator})")
-                    
+
                     if not pants_id:
                         continue
-                    
+
                     used_pants_ids.add(pants_id)
 
                     pairs_found += 1
                     _job_info["pairs_done"] = pairs_found
-                    send(f"✅ Çift #{pairs_found} bulundu! (`{keyword.title()}`)")
 
-                    shirt_out = await download_and_design(asset_id, keyword, "shirt", downloader, designer)
+                    send(
+                        f"✅ *{keyword.title()}* için çift bulundu!\n\n"
+                        f"• 🔢 Çift sayısı: `{pairs_found}/{target_pairs}`\n"
+                        f"• 👕 Shirt ID: `{asset_id}`\n"
+                        f"• 👖 Pants ID: `{pants_id}`\n\n"
+                        f"🎨 Tasarım uygulanıyor…"
+                    )
+
+                    shirt_label = f"{keyword.replace(' ', '_')}_shirt{pairs_found}"
+                    shirt_out = await download_and_design(
+                        asset_id, keyword, "shirt", downloader, designer, custom_label=shirt_label
+                    )
                     if not shirt_out:
                         send(f"❌ Shirt indirme başarısız: `{asset_id}`")
                         continue
 
-                    if not pants_id: 
-                        continue
-
-                    pants_out = await download_and_design(pants_id, keyword, "pants", downloader, designer)
+                    pants_label = f"{keyword.replace(' ', '_')}_pants{pairs_found}"
+                    pants_out = await download_and_design(
+                        pants_id, keyword, "pants", downloader, designer, custom_label=pants_label
+                    )
                     if not pants_out:
                         send(f"❌ Pants indirme başarısız: `{pants_id}`")
                         continue
 
-                    send(f"🎨 Tasarım eklendi — Shirt + Pants hazır!")
+                    send(
+                        f"🎨 Tasarım tamamlandı!\n\n"
+                        f"• 👕 Shirt ID: `{asset_id}`\n"
+                        f"• 👖 Pants ID: `{pants_id}`\n\n"
+                        f"☁️ Şimdi gruba yükleniyor…"
+                    )
 
                     if uploader:
                         send("☁️ Yükleniyor… _(Anti-ban bekleme başlıyor)_")
@@ -549,7 +592,13 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, loop, target_pairs):
                             keyword, uploader, upload_count, cfg
                         )
                         _job_info["uploads"] = upload_count
-                        send(f"🔗 Yüklendi + çapraz linklendi! Toplam yüklenen: `{upload_count}`")
+
+                        send(
+                            f"🔗 Yükleme tamamlandı ve açıklamalar çapraz linklendi!\n\n"
+                            f"• 📦 Bu oturumda yüklenen toplam item: `{upload_count}`\n"
+                            f"• 🔢 İşlenen çift: `{pairs_found}/{target_pairs}`\n\n"
+                            f"🔍 Yeni çiftler aranıyor…"
+                        )
 
                 if pairs_found >= target_pairs:
                     send(f"🏁 `{keyword.title()}` için {target_pairs} çift tamamlandı!")
@@ -565,11 +614,13 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, loop, target_pairs):
     finally:
         _job_stop.clear()
         _job_info["status"] = "idle"
-        send(
-            f"✅ *İş Tamamlandı!*\n\n"
-            f"📦 Toplam yüklenen: `{upload_count}` item\n\n"
-            f"_Ana menüye dönmek için /start yaz._"
-        )
+
+    send(
+        f"✅ *İş Tamamlandı!*\n\n"
+        f"📦 Bu oturumda toplamdaki yüklenen item sayısı: `{upload_count}`\n\n"
+        f"🧭 Yeni bir arama başlatmak veya ayarları değiştirmek için ana menüye dönebilirsin.",
+        reply_markup=back_keyboard()
+    )
 
 # ─── Live Sale Notifier (Background Task) ───────────────────────────────────
 _last_monitor_state = {"gid": 0, "cookie": None, "monitor": None}

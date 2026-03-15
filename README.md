@@ -62,4 +62,4 @@ Bu bot, **Render.com** üzerinde 7/24 çalışacak şekilde optimize edilmiştir
 Bu araç eğitim amaçlı geliştirilmiştir. Roblox kullanım şartlarına (TOS) uyulması tamamen kullanıcının sorumluluğundadır.
 
 ---
-*Geliştirici: Antigravity AI*
+*Geliştirici: dombili*
