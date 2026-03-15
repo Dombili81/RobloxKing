@@ -504,6 +504,27 @@ async def start_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE, keyword_list
         parse_mode="Markdown"
     )
 
+    # Geçici görsel önizleme: output dosyalarını Telegram'a atıp 30 sn sonra sil
+    async def send_preview(path: str, caption: str):
+        try:
+            with open(path, "rb") as f:
+                msg = await update.message.reply_document(
+                    document=f,
+                    caption=caption,
+                    parse_mode="Markdown",
+                )
+        except Exception as e:
+            # Önizleme hatası durumunda sessizce devam et
+            print(f"Preview send error for {path}: {e}")
+            return
+
+        # 30 saniye sonra mesajı sil
+        try:
+            await asyncio.sleep(30)
+            await msg.delete()
+        except Exception as e:
+            print(f"Preview delete error for {path}: {e}")
+
     async def send_fn(msg: str, *, reply_markup=None, force_new: bool = False):
         nonlocal status_msg
         # Varsayılan: mevcut durum mesajını güncelle
@@ -531,15 +552,18 @@ async def start_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE, keyword_list
     _job_stop.clear()
     t = threading.Thread(
         target=_job_thread_fn,
-        args=(keyword_list, cfg, cookie, send_fn, loop, TARGET_PAIRS),
+        args=(keyword_list, cfg, cookie, send_fn, send_preview, loop, TARGET_PAIRS),
         daemon=True,
     )
     t.start()
 
 # ─── Background job ──────────────────────────────────────────────────────────
-def _job_thread_fn(keyword_list, cfg, cookie, send_fn, loop, target_pairs):
+def _job_thread_fn(keyword_list, cfg, cookie, send_fn, preview_fn, loop, target_pairs):
     def send(msg, **kwargs):
         asyncio.run_coroutine_threadsafe(send_fn(msg, **kwargs), loop)
+
+    def preview(path: str, caption: str):
+        asyncio.run_coroutine_threadsafe(preview_fn(path, caption), loop)
 
     try:
         global _job_info
@@ -638,6 +662,10 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, loop, target_pairs):
                     if not pants_out:
                         send(f"❌ Pants indirme başarısız: `{pants_id}`")
                         continue
+
+                    # Test amaçlı: üretilen görselleri kısa süreliğine Telegram'a at
+                    preview(shirt_out, f"👕 *Shirt Preview* (Pair {pairs_found})\n`{shirt_out}`")
+                    preview(pants_out, f"👖 *Pants Preview* (Pair {pairs_found})\n`{pants_out}`")
 
                     send(
                         f"🎨 Tasarım tamamlandı!\n\n"
