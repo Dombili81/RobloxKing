@@ -2,12 +2,17 @@ import requests
 import re
 
 class RobloxScraper:
-    def __init__(self, cookie=None):
+    def __init__(self, cookie=None, sort_type: int = 2, sort_agg: int = 5):
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         })
         self.has_auth = False
+        # Search sort config (mirrors Roblox Catalog API)
+        # sort_type: 0=Relevance, 1=Favorited, 2=Sales, 4=PriceAsc, 5=PriceDesc...
+        # sort_agg : 1=PastDay, 3=PastWeek, 4=PastMonth, 5=AllTime
+        self.sort_type = sort_type
+        self.sort_agg  = sort_agg
         
         if cookie:
             self.session.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
@@ -43,7 +48,7 @@ class RobloxScraper:
         url = "https://catalog.roblox.com/v1/search/items/details"
 
         # Strategy: Use category=3 (Clothing) + specific assetTypes filter
-        # and sort by *Best Selling* so that we process top-sellers first.
+        # and configurable sort so that we can prioritize e.g. best selling.
         for page in range(4):
             params = {
                 "keyword": keyword,
@@ -51,10 +56,8 @@ class RobloxScraper:
                 "assetTypes": asset_type,
                 "limit": 30,
                 "cursor": cursor,
-                # 2 = BestSelling (Roblox catalog API)
-                "sortType": 2,
-                # 5 = AllTime aggregation (daha istikrarlı sonuçlar)
-                "sortAggregation": 5,
+                "sortType": self.sort_type,
+                "sortAggregation": self.sort_agg,
             }
             try:
                 response = self.session.get(url, params=params, timeout=10)
@@ -110,9 +113,8 @@ class RobloxScraper:
                 "assetTypes": asset_type,
                 "limit": 30,
                 "cursor": cursor,
-                # 2 = BestSelling (Roblox catalog API)
-                "sortType": 2,
-                "sortAggregation": 5,
+                "sortType": self.sort_type,
+                "sortAggregation": self.sort_agg,
             }
             try:
                 response = self.session.get(url, params=params, timeout=10)

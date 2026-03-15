@@ -46,7 +46,10 @@ def load_roblox_config(path="config.txt"):
         "PRICE": int(os.environ.get("PRICE", 5)),
         "DELAY_MIN": int(os.environ.get("DELAY_MIN", 45)),
         "DELAY_MAX": int(os.environ.get("DELAY_MAX", 90)),
-        "MAX_UPLOADS_PER_SESSION": int(os.environ.get("MAX_UPLOADS_PER_SESSION", 10))
+        "MAX_UPLOADS_PER_SESSION": int(os.environ.get("MAX_UPLOADS_PER_SESSION", 10)),
+        # Search sort defaults: Best Selling, All Time
+        "SORT_TYPE": int(os.environ.get("SORT_TYPE", 2)),
+        "SORT_AGG": int(os.environ.get("SORT_AGG", 5)),
     }
     
     # 1. First, check Firebase for persistent settings
@@ -81,13 +84,19 @@ def load_roblox_config(path="config.txt"):
 
 def save_roblox_config(cfg, path="config.txt"):
     for k, v in cfg.items():
-        if k in ["GROUP_ID", "PRICE", "DELAY_MIN", "DELAY_MAX", "MAX_UPLOADS_PER_SESSION"]:
+        if k in ["GROUP_ID", "PRICE", "DELAY_MIN", "DELAY_MAX", "MAX_UPLOADS_PER_SESSION", "SORT_TYPE", "SORT_AGG"]:
             db_manager.save_setting(k, v)
 
     with open(path, "w") as f:
-        f.write(f"GROUP_ID={cfg['GROUP_ID']}\nPRICE={cfg['PRICE']}\n"
-                f"DELAY_MIN={cfg['DELAY_MIN']}\nDELAY_MAX={cfg['DELAY_MAX']}\n"
-                f"MAX_UPLOADS_PER_SESSION={cfg['MAX_UPLOADS_PER_SESSION']}\n")
+        f.write(
+            f"GROUP_ID={cfg['GROUP_ID']}\n"
+            f"PRICE={cfg['PRICE']}\n"
+            f"DELAY_MIN={cfg['DELAY_MIN']}\n"
+            f"DELAY_MAX={cfg['DELAY_MAX']}\n"
+            f"MAX_UPLOADS_PER_SESSION={cfg['MAX_UPLOADS_PER_SESSION']}\n"
+            f"SORT_TYPE={cfg['SORT_TYPE']}\n"
+            f"SORT_AGG={cfg['SORT_AGG']}\n"
+        )
 
 def load_cookie(path="cookie.txt"):
     # 1. First, check Firebase
@@ -155,11 +164,23 @@ def settings_keyboard():
     price   = cfg["PRICE"]
     group   = cfg["GROUP_ID"] if cfg["GROUP_ID"] else "Ayarlanmadı"
     cookie_str = "Ayarlı ✅" if load_cookie() else "Yok ❌"
+    sort_label_map = {
+        (2, 5): "En Çok Satan (Tüm Zamanlar)",
+        (2, 3): "En Çok Satan (Son Hafta)",
+        (2, 1): "En Çok Satan (Son Gün)",
+        (1, 5): "En Çok Favorilenen",
+        (4, 5): "Fiyat: Düşük → Yüksek",
+        (5, 5): "Fiyat: Yüksek → Düşük",
+    }
+    sort_key = (cfg.get("SORT_TYPE", 2), cfg.get("SORT_AGG", 5))
+    sort_label = sort_label_map.get(sort_key, "En Çok Satan (Tüm Zamanlar)")
+
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"💰  Fiyat: {price} Robux",   callback_data="set_price")],
         [InlineKeyboardButton(f"🏷  Grup ID: {group}",       callback_data="set_group")],
         [InlineKeyboardButton(f"🎯  Hedef Çift: {TARGET_PAIRS}", callback_data="set_pairs")],
         [InlineKeyboardButton(f"🔑  Cookie: {cookie_str}",       callback_data="set_cookie")],
+        [InlineKeyboardButton(f"🧭  Sıralama: {sort_label}",      callback_data="set_sort")],
         [InlineKeyboardButton("⬅️  Ana Menü",                 callback_data="main")],
     ])
 
@@ -277,7 +298,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"🎯 *Hedef Çift Sayısı*\n\nŞu an: `{TARGET_PAIRS}`\n\nHer keyword için kaç çift (shirt+pants) indirilsin? (1–30):",
             reply_markup=back_keyboard(), parse_mode="Markdown"
         )
-        
+
     elif data == "set_cookie":
         ctx.user_data["awaiting"] = "cookie"
         await q.edit_message_text(
@@ -285,6 +306,22 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "_(Sadece başına ve sonuna tırnak koymadan, değerin kendisini yapıştır)_",
             reply_markup=back_keyboard(), parse_mode="Markdown"
         )
+
+    elif data == "set_sort":
+        await q.edit_message_text(
+            "🧭 *Sıralama Şekli*\n\n"
+            "Sonraki indirmelerde hangi sıraya göre arama yapılacağını seç:\n\n"
+            "1️⃣ En Çok Satan (Tüm Zamanlar)\n"
+            "2️⃣ En Çok Satan (Son Hafta)\n"
+            "3️⃣ En Çok Satan (Son Gün)\n"
+            "4️⃣ En Çok Favorilenen (Tüm Zamanlar)\n"
+            "5️⃣ Fiyat: Düşük → Yüksek\n"
+            "6️⃣ Fiyat: Yüksek → Düşük\n\n"
+            "Seçtiğin numarayı yaz (örn: `1`).",
+            reply_markup=back_keyboard(),
+            parse_mode="Markdown"
+        )
+        ctx.user_data["awaiting"] = "sort"
 
     # ── İş Başlat ──
     elif data == "run":
@@ -424,6 +461,29 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f.write(cookie_val)
         await update.message.reply_text("✅ *Cookie başarıyla kaydedildi!*\n(Bulut veritabanlarına da işlendi)", reply_markup=settings_keyboard(), parse_mode="Markdown")
 
+    elif awaiting == "sort":
+        ctx.user_data["awaiting"] = None
+        choice = text
+        sort_map = {
+            "1": (2, 5),  # Best Selling, All Time
+            "2": (2, 3),  # Best Selling, Past Week
+            "3": (2, 1),  # Best Selling, Past Day
+            "4": (1, 5),  # Most Favorited, All Time
+            "5": (4, 5),  # Price Asc
+            "6": (5, 5),  # Price Desc
+        }
+        if choice not in sort_map:
+            await update.message.reply_text("❌ Geçersiz seçim. 1–6 arasında bir numara yaz.", reply_markup=settings_keyboard(), parse_mode="Markdown")
+            return
+
+        sort_type, sort_agg = sort_map[choice]
+        cfg = load_roblox_config()
+        cfg["SORT_TYPE"] = sort_type
+        cfg["SORT_AGG"]  = sort_agg
+        save_roblox_config(cfg)
+
+        await update.message.reply_text("✅ Sıralama tercihin kaydedildi. Bir sonraki aramada bu sıraya göre aranacak.", reply_markup=settings_keyboard(), parse_mode="Markdown")
+
     else:
         # Tanımsız mesaj → Ana menüyü göster
         await update.message.reply_text("Ana menü:", reply_markup=main_menu_keyboard())
@@ -485,7 +545,11 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, loop, target_pairs):
         global _job_info
         _job_info.update({"status": "running", "keywords": keyword_list, "pairs_done": 0, "uploads": 0})
 
-        roblox     = RobloxScraper(cookie=cookie)
+        # Sıralama ayarlarını config'ten çek
+        sort_type = cfg.get("SORT_TYPE", 2)
+        sort_agg  = cfg.get("SORT_AGG", 5)
+
+        roblox     = RobloxScraper(cookie=cookie, sort_type=sort_type, sort_agg=sort_agg)
         downloader = AssetDownloader()
         designer   = TemplateDesigner()
 

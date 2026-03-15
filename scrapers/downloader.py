@@ -1,10 +1,55 @@
 import requests
 import os
 import re
+from scrapers.firebase_db import FirebaseManager
+
 
 class AssetDownloader:
     def __init__(self):
-        pass
+        # Firebase üzerinden merkezi cookie yönetimi (Render dahil her ortamda aynı)
+        self.db = FirebaseManager()
+
+    def _load_cookie(self) -> str | None:
+        """
+        Cookie öncelik sırası:
+        1) Firebase (ROBLOX_COOKIE)
+        2) Ortam değişkeni (ROBLOX_COOKIE)
+        3) Local cookie.txt (geliştirme için)
+        """
+        # 1. Firebase
+        try:
+            cloud = self.db.load_settings()
+        except Exception:
+            cloud = {}
+
+        raw = cloud.get("ROBLOX_COOKIE")
+        if raw:
+            raw = str(raw).strip().strip('"').strip("'")
+            if raw.startswith(".ROBLOSECURITY="):
+                return raw[len(".ROBLOSECURITY="):]
+            return raw
+
+        # 2. Env var
+        env_cookie = os.environ.get("ROBLOX_COOKIE")
+        if env_cookie:
+            env_cookie = env_cookie.strip().strip('"').strip("'")
+            if env_cookie.startswith(".ROBLOSECURITY="):
+                return env_cookie[len(".ROBLOSECURITY="):]
+            return env_cookie
+
+        # 3. Local file (dev)
+        if os.path.exists("cookie.txt"):
+            try:
+                with open("cookie.txt", "r", encoding="utf-8") as f:
+                    file_cookie = f.read().strip().strip('"').strip("'")
+                if file_cookie:
+                    if file_cookie.startswith(".ROBLOSECURITY="):
+                        return file_cookie[len(".ROBLOSECURITY="):]
+                    return file_cookie
+            except Exception:
+                pass
+
+        return None
 
     async def download_template(self, asset_id):
         """
@@ -16,22 +61,17 @@ class AssetDownloader:
         path = f"downloads/{asset_id}.png"
         os.makedirs("downloads", exist_ok=True)
 
-        # Try to load cookie from project root
-        cookie = None
-        if os.path.exists("cookie.txt"):
-            try:
-                with open("cookie.txt", "r") as f:
-                    cookie = f.read().strip().replace('"', '').replace("'", "")
-                print(f"Cookie detected (starts with: {cookie[:15]}...). Using authenticated requests.")
-            except:
-                pass
+        # Try to load cookie (Firebase → Env → cookie.txt)
+        cookie = self._load_cookie()
+        if cookie:
+            print(f"Cookie detected (starts with: {cookie[:15]}...). Using authenticated requests.")
 
         headers = {
             "User-Agent": "Roblox/WinInet",
         }
         if cookie:
-            # Roblox cookies MUST start with .ROBLOSECURITY=
-            headers["Cookie"] = f".ROBLOSECURITY={cookie}" if not cookie.startswith(".ROBLOSECURITY=") else cookie
+            # Roblox cookies MUST be sent as .ROBLOSECURITY
+            headers["Cookie"] = f".ROBLOSECURITY={cookie}"
 
         # Strategy:
         # 1. Try Direct Asset Delivery
