@@ -459,110 +459,117 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, loop, target_pairs):
     def send(msg):
         asyncio.run_coroutine_threadsafe(send_fn(msg), loop)
 
-    global _job_info
-    _job_info.update({"status": "running", "keywords": keyword_list, "pairs_done": 0, "uploads": 0})
+    try:
+        global _job_info
+        _job_info.update({"status": "running", "keywords": keyword_list, "pairs_done": 0, "uploads": 0})
 
-    roblox     = RobloxScraper(cookie=cookie)
-    downloader = AssetDownloader()
-    designer   = TemplateDesigner()
+        roblox     = RobloxScraper(cookie=cookie)
+        downloader = AssetDownloader()
+        designer   = TemplateDesigner()
 
-    group_id = cfg.get("GROUP_ID", 0)
-    uploader = None
-    if cookie and group_id:
-        uploader = AssetUploader(
-            cookie=cookie, group_id=group_id, price=cfg["PRICE"],
-            delay_min=cfg["DELAY_MIN"], delay_max=cfg["DELAY_MAX"],
-            max_uploads=cfg["MAX_UPLOADS_PER_SESSION"],
+        group_id = cfg.get("GROUP_ID", 0)
+        uploader = None
+        if cookie and group_id:
+            uploader = AssetUploader(
+                cookie=cookie, group_id=group_id, price=cfg["PRICE"],
+                delay_min=cfg["DELAY_MIN"], delay_max=cfg["DELAY_MAX"],
+                max_uploads=cfg["MAX_UPLOADS_PER_SESSION"],
+            )
+        else:
+            if not group_id:
+                send("⚠️ Grup ID ayarlanmadı — sadece indirme yapılacak.\n_Ayarlamak için: ⚙️ Ayarlar → Grup ID_")
+
+        upload_count = 0
+
+        for keyword in keyword_list:
+            if _job_stop.is_set(): break
+            send(f"🔍 *{keyword.title()}* için tarama başlıyor…")
+            pairs_found = 0
+
+            inner_loop = asyncio.new_event_loop()
+
+            async def process_keyword():
+                nonlocal pairs_found, upload_count
+                
+                # Step 1: Pre-fetch a pool of pants for creator-matching fallback
+                send(f"📥 *{keyword.title()}* için pantolon havuzu hazırlanıyor...")
+                pants_pool = await roblox.search_and_get_assets(keyword, count=40, asset_type=12)
+                used_pants_ids = set()
+
+                async for asset_id, item_url, creator in roblox.search_and_yield_assets(keyword):
+                    if _job_stop.is_set() or pairs_found >= target_pairs:
+                        break
+                    
+                    # Try Method A: Direct link in description (Best)
+                    try:
+                        paired_pants = await roblox.get_paired_pants(asset_id)
+                    except Exception:
+                        paired_pants = []
+                    
+                    pants_id = None
+                    
+                    if paired_pants:
+                        pants_id, _ = paired_pants[0]
+                        print(f"[Match] Found via direct link: {asset_id} <-> {pants_id}")
+                    else:
+                        # Method B: Creator matching fallback
+                        match = [p[0] for p in pants_pool if p[2] == creator and p[0] not in used_pants_ids]
+                        if match:
+                            pants_id = match[0]
+                            print(f"[Match] Found via creator fallback: {asset_id} <-> {pants_id} (Creator: {creator})")
+                    
+                    if not pants_id:
+                        continue
+                    
+                    used_pants_ids.add(pants_id)
+
+                    pairs_found += 1
+                    _job_info["pairs_done"] = pairs_found
+                    send(f"✅ Çift #{pairs_found} bulundu! (`{keyword.title()}`)")
+
+                    shirt_out = await download_and_design(asset_id, keyword, "shirt", downloader, designer)
+                    if not shirt_out:
+                        send(f"❌ Shirt indirme başarısız: `{asset_id}`")
+                        continue
+
+                    if not pants_id: 
+                        continue
+
+                    pants_out = await download_and_design(pants_id, keyword, "pants", downloader, designer)
+                    if not pants_out:
+                        send(f"❌ Pants indirme başarısız: `{pants_id}`")
+                        continue
+
+                    send(f"🎨 Tasarım eklendi — Shirt + Pants hazır!")
+
+                    if uploader:
+                        send("☁️ Yükleniyor… _(Anti-ban bekleme başlıyor)_")
+                        upload_count = await upload_pair_with_crosslink(
+                            asset_id, shirt_out, pants_id, pants_out,
+                            keyword, uploader, upload_count, cfg
+                        )
+                        _job_info["uploads"] = upload_count
+                        send(f"🔗 Yüklendi + çapraz linklendi! Toplam yüklenen: `{upload_count}`")
+
+                if pairs_found >= target_pairs:
+                    send(f"🏁 `{keyword.title()}` için {target_pairs} çift tamamlandı!")
+                elif pairs_found == 0:
+                    send(f"😕 `{keyword.title()}` için eşleşen çift bulunamadı.")
+
+            inner_loop.run_until_complete(process_keyword())
+            inner_loop.close()
+
+    except Exception as e:
+        print(f"BÜYÜK HATA (Arkaplan İşi): {e}")
+        send(f"⚠️ *Kritik Bir Hata Oluştu!*\n\nBot işleme durduruldu. Lütfen tekrar başlatmayı dene.\n`Hata: {e}`")
+    finally:
+        _job_stop.clear()
+        _job_info["status"] = "idle"
+        send(
+            f"✅ *İş Tamamlandı!*\n\n"
+            f"📦 Toplam yüklenen: `{upload_count}` item\n\n"
+            f"_Ana menüye dönmek için /start yaz._"
         )
-    else:
-        if not group_id:
-            send("⚠️ Grup ID ayarlanmadı — sadece indirme yapılacak.\n_Ayarlamak için: ⚙️ Ayarlar → Grup ID_")
-
-    upload_count = 0
-
-    for keyword in keyword_list:
-        if _job_stop.is_set(): break
-        send(f"🔍 *{keyword.title()}* için tarama başlıyor…")
-        pairs_found = 0
-
-        inner_loop = asyncio.new_event_loop()
-
-        async def process_keyword():
-            nonlocal pairs_found, upload_count
-            
-            # Step 1: Pre-fetch a pool of pants for creator-matching fallback
-            send(f"📥 *{keyword.title()}* için pantolon havuzu hazırlanıyor...")
-            pants_pool = await roblox.search_and_get_assets(keyword, count=40, asset_type=12)
-            used_pants_ids = set()
-
-            async for asset_id, item_url, creator in roblox.search_and_yield_assets(keyword):
-                if _job_stop.is_set() or pairs_found >= target_pairs:
-                    break
-                
-                # Try Method A: Direct link in description (Best)
-                try:
-                    paired_pants = await roblox.get_paired_pants(asset_id)
-                except Exception:
-                    paired_pants = []
-                
-                pants_id = None
-                
-                if paired_pants:
-                    pants_id, _ = paired_pants[0]
-                    print(f"[Match] Found via direct link: {asset_id} <-> {pants_id}")
-                else:
-                    # Method B: Creator matching fallback
-                    match = [p[0] for p in pants_pool if p[2] == creator and p[0] not in used_pants_ids]
-                    if match:
-                        pants_id = match[0]
-                        print(f"[Match] Found via creator fallback: {asset_id} <-> {pants_id} (Creator: {creator})")
-                
-                if not pants_id:
-                    continue
-                
-                used_pants_ids.add(pants_id)
-
-                pairs_found += 1
-                _job_info["pairs_done"] = pairs_found
-                send(f"✅ Çift #{pairs_found} bulundu! (`{keyword.title()}`)")
-
-                shirt_out = await download_and_design(asset_id, keyword, "shirt", downloader, designer)
-                if not shirt_out:
-                    send(f"❌ Shirt indirme başarısız: `{asset_id}`")
-                    continue
-
-                pants_id, _ = paired_pants[0]
-                pants_out = await download_and_design(pants_id, keyword, "pants", downloader, designer)
-                if not pants_out:
-                    send(f"❌ Pants indirme başarısız: `{pants_id}`")
-                    continue
-
-                send(f"🎨 Tasarım eklendi — Shirt + Pants hazır!")
-
-                if uploader:
-                    send("☁️ Yükleniyor… _(Anti-ban bekleme başlıyor)_")
-                    upload_count = await upload_pair_with_crosslink(
-                        asset_id, shirt_out, pants_id, pants_out,
-                        keyword, uploader, upload_count, cfg
-                    )
-                    _job_info["uploads"] = upload_count
-                    send(f"🔗 Yüklendi + çapraz linklendi! Toplam yüklenen: `{upload_count}`")
-
-            if pairs_found >= target_pairs:
-                send(f"🏁 `{keyword.title()}` için {target_pairs} çift tamamlandı!")
-            elif pairs_found == 0:
-                send(f"😕 `{keyword.title()}` için eşleşen çift bulunamadı.")
-
-        inner_loop.run_until_complete(process_keyword())
-        inner_loop.close()
-
-    _job_stop.clear()
-    _job_info["status"] = "idle"
-    send(
-        f"✅ *İş Tamamlandı!*\n\n"
-        f"📦 Toplam yüklenen: `{upload_count}` item\n\n"
-        f"_Ana menüye dönmek için /start yaz._"
-    )
 
 # ─── Live Sale Notifier (Background Task) ───────────────────────────────────
 _last_monitor_state = {"gid": 0, "cookie": None, "monitor": None}
