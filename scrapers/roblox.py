@@ -69,9 +69,10 @@ class RobloxScraper:
                                 continue
                                 
                             item_name = item.get("name", "Asset")
+                            creator_name = item.get("creatorName", "Unknown")
                             item_url = f"https://www.roblox.com/catalog/{asset_id}/"
-                            print(f"Adding {asset_name}: {item_name} (ID: {asset_id})")
-                            found_assets.append((asset_id, item_url))
+                            print(f"Adding {asset_name}: {item_name} (ID: {asset_id}) by {creator_name}")
+                            found_assets.append((asset_id, item_url, creator_name))
                             
                 else:
                     print(f"DEBUG: Search failed (Status: {response.status_code})")
@@ -124,8 +125,9 @@ class RobloxScraper:
                             seen_ids.add(asset_id)
                                 
                             item_name = item.get("name", "Asset")
+                            creator_name = item.get("creatorName", "Unknown")
                             item_url = f"https://www.roblox.com/catalog/{asset_id}/"
-                            yield (asset_id, item_url)
+                            yield (asset_id, item_url, creator_name)
                     
                     if not cursor:
                         break

@@ -489,7 +489,7 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, loop, target_pairs):
 
         async def process_keyword():
             nonlocal pairs_found, upload_count
-            async for asset_id, item_url in roblox.search_and_yield_assets(keyword):
+            async for asset_id, item_url, _ in roblox.search_and_yield_assets(keyword):
                 if _job_stop.is_set() or pairs_found >= target_pairs:
                     break
                 try:

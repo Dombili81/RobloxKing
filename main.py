@@ -304,7 +304,7 @@ async def main():
         
         try:
             # We use the generator to continually pull shirts until we find 5 valid pairs
-            async for asset_id, item_url in roblox.search_and_yield_assets(keyword):
+            async for asset_id, item_url, _ in roblox.search_and_yield_assets(keyword):
                 if pairs_found >= target_pairs:
                     print(f"  Reached target of {target_pairs} pairs for '{keyword}'. Moving to next keyword.")
                     break
