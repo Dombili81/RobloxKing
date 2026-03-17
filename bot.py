@@ -122,9 +122,11 @@ def load_cookie(path="cookie.txt"):
         return env_cookie
     return None
 
-BOT_CFG    = load_bot_config()
-BOT_TOKEN  = BOT_CFG.get("BOT_TOKEN", "")
-ALLOWED_ID = int(BOT_CFG.get("ALLOWED_USER_ID", "0"))
+BOT_CFG     = load_bot_config()
+BOT_TOKEN   = BOT_CFG.get("BOT_TOKEN", "")
+# ALLOWED_IDS can be a comma-separated string: "123, 456, 789"
+raw_ids     = str(BOT_CFG.get("ALLOWED_USER_ID", "0"))
+ALLOWED_IDS = [int(x.strip()) for x in raw_ids.split(",") if x.strip().isdigit()]
 
 # ─── Conversation states ──────────────────────────────────────────────────────
 WAITING_KEYWORD  = 1
@@ -140,7 +142,7 @@ TARGET_PAIRS = _initial_cfg.get("TARGET_PAIRS", 5)
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 def is_allowed(update: Update) -> bool:
-    return update.effective_user.id == ALLOWED_ID
+    return update.effective_user.id in ALLOWED_IDS
 
 async def deny(update: Update):
     if update.message:
@@ -850,7 +852,7 @@ def main():
     if not db_manager.is_active:
         print("❗ UYARI: Firebase-key.json bulunamadı. Değişiklikler buluta işlenmeyecek!")
     
-    print(f"🤖 Allowed ID: {ALLOWED_ID}")
+    print(f"🤖 Yetkili ID'ler: {ALLOWED_IDS}")
     print("="*50 + "\n")
 
     # job_queue'yu aktif etmek için builder yeterli, timeout artırıldı
