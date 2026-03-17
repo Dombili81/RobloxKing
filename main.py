@@ -85,12 +85,23 @@ def generate_metadata(keyword: str, item_type: str, pair_url: str = "") -> tuple
     """
     Returns (name, description) for a shirt or pants upload.
     item_type : 'shirt' or 'pants'
-    pair_url  : catalog URL of the matching piece (optional)
+    pair_url  : catalog URL of the matching piece (eşinin linki; satışa koyduktan sonra eklenir)
     """
     kw_title = keyword.title()
-    name = f"{kw_title} [+]"
+    # Shirt [+] , Pants [-]
+    if item_type == "pants":
+        name = f"{kw_title} [-]"
+    else:
+        name = f"{kw_title} [+]"
 
-    pair_line = f"\nMatching Pants/Shirts: \n{pair_url}\n" if pair_url else ""
+    # Shirt açıklamasına eşi = pants linki; pants açıklamasına eşi = shirt linki
+    if pair_url:
+        if item_type == "shirt":
+            pair_line = f"\nMathcing Pants:\n{pair_url}\n"
+        else:
+            pair_line = f"\nMathcing Shirt:\n{pair_url}\n"
+    else:
+        pair_line = ""
 
     char_tags = get_tags(keyword)
     tags_line = f"{keyword} {BASE_TAGS} {char_tags}"
@@ -102,6 +113,8 @@ def generate_metadata(keyword: str, item_type: str, pair_url: str = "") -> tuple
         "~~~\n"
         f"Tags: {tags_line}"
     )
+    # Log the description length (Roblox limit is usually 1000)
+    print(f"[Metadata] {item_type.upper()} description length: {len(description)}")
 
     return name, description
 
@@ -159,50 +172,52 @@ async def upload_pair_with_crosslink(
         print(f"[Anti-ban] Waiting {wait:.1f}s ...")
         time.sleep(wait)
 
-    # --- Upload Shirt (no pair_url yet) ---
+    # --- Upload Pants first (no pair_url yet) ---
     if not _can_upload():
         print(f"[Anti-ban] Session cap reached. Skipping uploads.")
         return upload_count
 
-    shirt_name, shirt_desc_temp = generate_metadata(keyword, "shirt")
+    pants_name, pants_desc_temp = generate_metadata(keyword, "pants")
     if upload_count > 0:
         _anti_ban()
-
-    shirt_asset_id = uploader.upload_and_sell(shirt_path, shirt_name, shirt_desc_temp, item_type=11)
-    if shirt_asset_id:
-        upload_count += 1
-        print(f"[Upload] '{shirt_name}' listed for {price} Robux! ({upload_count} total)")
-    else:
-        print(f"[Upload] Failed to upload shirt {shirt_id}.")
-        return upload_count
-
-    # --- Upload Pants (no pair_url yet) ---
-    if not _can_upload():
-        return upload_count
-
-    pants_name, pants_desc_temp = generate_metadata(keyword, "pants")
-    _anti_ban()
 
     pants_asset_id = uploader.upload_and_sell(pants_path, pants_name, pants_desc_temp, item_type=12)
     if pants_asset_id:
         upload_count += 1
-        print(f"[Upload] '{pants_name}' listed for {price} Robux! ({upload_count} total)")
+        pants_url = f"https://www.roblox.com/catalog/{pants_asset_id}/"
+        print(f"[Upload] '{pants_name}' uploaded! ID: {pants_asset_id}")
     else:
         print(f"[Upload] Failed to upload pants {pants_id}.")
         return upload_count
 
-    # --- Cross-link: update descriptions with each other's catalog URL ---
-    shirt_url = f"https://www.roblox.com/catalog/{shirt_asset_id}/"
-    pants_url = f"https://www.roblox.com/catalog/{pants_asset_id}/"
+    # --- Upload Shirt WITH Pants link ---
+    if not _can_upload():
+        return upload_count
 
-    _, shirt_desc_linked = generate_metadata(keyword, "shirt",  pair_url=pants_url)
+    shirt_name, shirt_desc_linked = generate_metadata(keyword, "shirt", pair_url=pants_url)
+    _anti_ban()
+
+    shirt_asset_id = uploader.upload_and_sell(shirt_path, shirt_name, shirt_desc_linked, item_type=11)
+    if shirt_asset_id:
+        upload_count += 1
+        shirt_url = f"https://www.roblox.com/catalog/{shirt_asset_id}/"
+        print(f"[Upload] '{shirt_name}' uploaded! ID: {shirt_asset_id}")
+    else:
+        print(f"[Upload] Failed to upload shirt {shirt_id}.")
+        return upload_count
+
+    # --- Update Pants WITH Shirt link ---
+    print(f"[CrossLink] Updating pants {pants_asset_id} with shirt URL: {shirt_url}")
+    # Short pause to ensure Roblox has indexed the shirt before we link to it
+    time.sleep(5)
+    
     _, pants_desc_linked = generate_metadata(keyword, "pants", pair_url=shirt_url)
-
-    print(f"[CrossLink] Updating shirt {shirt_asset_id} with pants URL ...")
-    uploader.update_description(shirt_asset_id, shirt_name, shirt_desc_linked)
-
-    print(f"[CrossLink] Updating pants {pants_asset_id} with shirt URL ...")
-    uploader.update_description(pants_asset_id, pants_name, pants_desc_linked)
+    success = uploader.update_description(pants_asset_id, pants_name, pants_desc_linked, item_type=12)
+    
+    if success:
+        print(f"[CrossLink] SUCCESS: Updated pants {pants_asset_id} description.")
+    else:
+        print(f"[CrossLink] FAILED: Could not update pants {pants_asset_id} description.")
 
     return upload_count
 

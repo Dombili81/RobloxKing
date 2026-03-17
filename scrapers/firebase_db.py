@@ -21,23 +21,30 @@ class FirebaseManager:
         try:
             if not firebase_admin._apps:
                 if env_json:
-                    # Ortam değişkenindeki JSON stringini parse edip yetkilendir
                     cred_dict = json.loads(env_json)
                     cred = credentials.Certificate(cred_dict)
                     firebase_admin.initialize_app(cred)
                 elif os.path.exists(key_path):
-                    # Yerel dosyadan yetkilendir
                     cred = credentials.Certificate(key_path)
                     firebase_admin.initialize_app(cred)
                 else:
-                    return # Firebase bilgileri yok, deaktif bırak
+                    return 
 
             self.db = firestore.client()
             self.is_active = True
             self.doc_ref = self.db.collection("roblox_bot").document("settings")
-            print("☁️  Firebase Firestore bağlantısı başarılı.")
+            
+            # Get project ID safely even if cred wasn't defined in this specific call
+            project_id = "Bilinmiyor"
+            if firebase_admin._apps:
+                main_app = firebase_admin.get_app()
+                if main_app.project_id:
+                    project_id = main_app.project_id
+            
+            print(f"☁️  Firebase Firestore bağlantısı başarılı (Proje: {project_id})")
         except Exception as e:
             print(f"⚠️ Firebase başlatılamadı: {e}")
+            print("💡 İPUCU: firebase-key.json dosyası mevcut mu?")
 
     def save_setting(self, key: str, value):
         """ Tek bir ayarı Firebase'e kaydet """

@@ -13,6 +13,7 @@ class RobloxScraper:
         # sort_agg : 1=PastDay, 3=PastWeek, 4=PastMonth, 5=AllTime
         self.sort_type = sort_type
         self.sort_agg  = sort_agg
+        self._desc_cache = {} # Cache to avoid 429s on description calls
         
         if cookie:
             self.session.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
@@ -26,6 +27,30 @@ class RobloxScraper:
                     print("[RobloxScraper] Authenticated session started with CSRF token.")
             except Exception as e:
                 print(f"[RobloxScraper] Failed to init authenticated session: {e}")
+
+    def _request_with_retry(self, method, url, max_retries=3, initial_delay=2, **kwargs):
+        """Helper to handle 429 Rate Limit with exponential backoff."""
+        import time
+        attempt = 0
+        while attempt < max_retries:
+            try:
+                if method.upper() == "GET":
+                    r = self.session.get(url, **kwargs)
+                else:
+                    r = self.session.post(url, **kwargs)
+                
+                if r.status_code == 429:
+                    wait_time = initial_delay * (2 ** attempt)
+                    print(f"⚠️ Rate limited (429)! Waiting {wait_time}s before retry {attempt+1}/{max_retries}...")
+                    time.sleep(wait_time)
+                    attempt += 1
+                    continue
+                return r
+            except Exception as e:
+                print(f"Request error: {e}")
+                time.sleep(initial_delay)
+                attempt += 1
+        return None
 
     async def start(self):
         return self
@@ -60,8 +85,8 @@ class RobloxScraper:
                 "sortAggregation": self.sort_agg,
             }
             try:
-                response = self.session.get(url, params=params, timeout=10)
-                if response.status_code == 200:
+                response = self._request_with_retry("GET", url, params=params, timeout=10)
+                if response and response.status_code == 200:
                     data = response.json()
                     listings = data.get("data", [])
                     cursor = data.get("nextPageCursor")
@@ -79,7 +104,7 @@ class RobloxScraper:
                             creator_name = item.get("creatorName", "Unknown")
                             item_url = f"https://www.roblox.com/catalog/{asset_id}/"
                             print(f"Adding {asset_name}: {item_name} (ID: {asset_id}) by {creator_name}")
-                            found_assets.append((asset_id, item_url, creator_name))
+                            found_assets.append((asset_id, item_url, creator_name, item_name))
                             
                 else:
                     print(f"DEBUG: Search failed (Status: {response.status_code})")
@@ -117,8 +142,8 @@ class RobloxScraper:
                 "sortAggregation": self.sort_agg,
             }
             try:
-                response = self.session.get(url, params=params, timeout=10)
-                if response.status_code == 200:
+                response = self._request_with_retry("GET", url, params=params, timeout=10)
+                if response and response.status_code == 200:
                     data = response.json()
                     listings = data.get("data", [])
                     cursor = data.get("nextPageCursor")
@@ -135,7 +160,7 @@ class RobloxScraper:
                             item_name = item.get("name", "Asset")
                             creator_name = item.get("creatorName", "Unknown")
                             item_url = f"https://www.roblox.com/catalog/{asset_id}/"
-                            yield (asset_id, item_url, creator_name)
+                            yield (asset_id, item_url, creator_name, item_name)
                     
                     if not cursor:
                         break
@@ -152,17 +177,31 @@ class RobloxScraper:
         Returns a list of (asset_id, url) tuples for any paired pants found.
         AssetType 12 = Classic Pants.
         """
+        # 0. Check cache
+        if shirt_asset_id in self._desc_cache:
+            return self._desc_cache[shirt_asset_id]
+
         # 1. Fetch asset details to get description
         try:
-            r = self.session.get(
+            # Add a small delay for every description fetch to be gentle
+            import time
+            time.sleep(0.3)
+            
+            r = self._request_with_retry(
+                "GET",
                 f"https://economy.roblox.com/v2/assets/{shirt_asset_id}/details",
                 timeout=10,
             )
-            if r.status_code != 200:
-                print(f"[PairedPants] Could not fetch description. Status: {r.status_code}")
+            if not r or r.status_code != 200:
+                code = r.status_code if r else "Timeout"
+                print(f"[PairedPants] Could not fetch description for {shirt_asset_id}. Status: {code}")
                 return []
             details = r.json()
             description = details.get("Description") or details.get("description") or ""
+            # Cache positive but empty results to avoid retrying
+            if not description:
+                self._desc_cache[shirt_asset_id] = []
+                return []
         except Exception as e:
             print(f"[PairedPants] Could not fetch description for {shirt_asset_id}: {e}")
             return []
@@ -227,5 +266,6 @@ class RobloxScraper:
             except Exception as e:
                 print(f"[PairedPants] Error checking linked asset {linked_id}: {e}")
 
+        self._desc_cache[shirt_asset_id] = pants_assets
         return pants_assets
 

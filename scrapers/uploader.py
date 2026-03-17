@@ -79,7 +79,7 @@ class AssetUploader:
                 if method == "POST":
                     r = self.session.post(url, data=data, json=json, files=files, timeout=30)
                 else:  # PATCH
-                    r = self.session.patch(url, data=data, json=json, timeout=30)
+                    r = self.session.patch(url, data=data, json=json, files=files, timeout=30)
             except Exception as e:
                 print(f"[Uploader] Network error (attempt {attempt}): {e}")
                 time.sleep(backoff)
@@ -119,10 +119,36 @@ class AssetUploader:
             return False
         return True
 
+    def _poll_operation(self, operation_id: str) -> int | None:
+        """Poll the operation status until it's done or fails."""
+        poll_url = f"https://apis.roblox.com/assets/user-auth/v1/operations/{operation_id}"
+        print(f"[Uploader] Waiting for upload operation {operation_id} ...")
+        
+        for _ in range(15):  # Max 15 attempts (approx 30s)
+            time.sleep(2)
+            try:
+                r = self.session.get(poll_url, timeout=10)
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("done"):
+                        response = data.get("response", {})
+                        asset_id = response.get("assetId")
+                        if asset_id:
+                            print(f"[Uploader] Operation Complete -> Asset ID: {asset_id}")
+                            return int(asset_id)
+                        else:
+                            print(f"[Uploader] Operation failed: {data.get('error') or 'Unknown error'}")
+                            return None
+            except Exception as e:
+                print(f"[Uploader] Polling error: {e}")
+        
+        print("[Uploader] Polling timed out.")
+        return None
+
     def upload_asset(self, image_path: str, name: str, description: str = "", item_type: int = 11) -> int | None:
         """
-        Upload a Classic Shirt (11) or Classic Pants (12) PNG to the group.
-        Returns the new assetId on success, or None on failure.
+        Upload a Classic Shirt (11) or Classic Pants (12) PNG using modern APIS endpoint.
+        Returns the new assetId on success (after polling), or None on failure.
         """
         if not self._check_session_cap():
             return None
@@ -132,90 +158,141 @@ class AssetUploader:
             return None
 
         type_label = "Shirt" if item_type == 11 else "Pants"
-        print(f"[Uploader] Uploading {type_label} '{name}' → group {self.group_id} ...")
+        print(f"[Uploader] Uploading {type_label} '{name}' → group {self.group_id} (Modern API) ...")
+
+        import json
+        request_data = {
+            "displayName": name,
+            "description": description or "Uploaded by RobloxKing",
+            "assetType": int(item_type),
+            "creationContext": {
+                "creator": {
+                    "groupId": int(self.group_id)
+                },
+                "expectedPrice": 10
+            }
+        }
 
         with open(image_path, "rb") as f:
-            files = {"file": (os.path.basename(image_path), f, "image/png")}
-            data = {
-                "AssetType": str(item_type),
-                "Name": name,
-                "Description": description,
-                "GroupId": str(self.group_id),
+            files = {
+                "request": (None, json.dumps(request_data), "application/json"),
+                "fileContent": (os.path.basename(image_path), f, "image/png")
             }
-            r = self._post_with_retry(
-                "https://itemconfiguration.roblox.com/v1/asset",
-                data=data,
-                files=files,
-            )
+            
+            # Use specific headers for create.roblox.com
+            prev_referer = self.session.headers.get("Referer")
+            prev_origin = self.session.headers.get("Origin")
+            self.session.headers.update({
+                "Referer": "https://create.roblox.com/",
+                "Origin": "https://create.roblox.com"
+            })
+            
+            try:
+                r = self._post_with_retry(
+                    "https://apis.roblox.com/assets/user-auth/v1/assets",
+                    files=files
+                )
+            finally:
+                # Restore previous headers
+                if prev_referer: self.session.headers["Referer"] = prev_referer
+                if prev_origin: self.session.headers["Origin"] = prev_origin
 
         if r is None:
             print("[Uploader] Upload failed after all retries.")
             return None
 
-        if r.status_code == 200:
+        if r.status_code in (200, 201):
             body = r.json()
-            asset_id = body.get("assetId") or body.get("AssetId")
-            print(f"[Uploader] Upload OK → Asset ID: {asset_id}")
-            self._uploads_this_session += 1
-            return asset_id
+            operation_id = body.get("path") or body.get("operationId")
+            if operation_id:
+                # 'path' is often 'operations/SOME_ID'
+                op_id = operation_id.split("/")[-1]
+                asset_id = self._poll_operation(op_id)
+                if asset_id:
+                    self._uploads_this_session += 1
+                    return asset_id
+            return None
         else:
-            print(f"[Uploader] Upload failed (HTTP {r.status_code}): {r.text[:300]}")
+            print(f"[Uploader] Upload FAILED (HTTP {r.status_code})")
+            print(f"[Uploader] Response: {r.text[:500]}")
             return None
 
     # Keep backward-compat alias
     def upload_shirt(self, image_path: str, name: str, description: str = "") -> int | None:
         return self.upload_asset(image_path, name, description, item_type=11)
 
-    def update_description(self, asset_id: int, name: str, description: str) -> bool:
-        """Update name and description of an already-uploaded asset."""
-        payload = {"name": name, "description": description}
-        r = self._post_with_retry(
-            f"https://itemconfiguration.roblox.com/v1/assets/{asset_id}/configure",
-            json=payload,
-            method="PATCH",
-        )
+    def update_description(self, asset_id: int, name: str, description: str, item_type: int = 11) -> bool:
+        """Update name and description of an already-uploaded asset using modern apis.roblox.com."""
+        print(f"[Uploader] Updating description for asset {asset_id} (Modern API) ...")
+        
+        url = f"https://apis.roblox.com/assets/user-auth/v1/assets/{asset_id}?updateMask=description"
+        import json
+        
+        type_str = "Shirt" if item_type == 11 else "Pants"
+        meta = {
+            "assetId": str(asset_id),
+            "assetType": type_str,
+            "description": description
+        }
+        
+        files = {
+            "request": (None, json.dumps(meta), "application/json")
+        }
+        
+        # Use specific headers for create.roblox.com
+        prev_referer = self.session.headers.get("Referer")
+        prev_origin = self.session.headers.get("Origin")
+        self.session.headers.update({
+            "Referer": "https://create.roblox.com/",
+            "Origin": "https://create.roblox.com"
+        })
+        
+        try:
+            r = self._post_with_retry(url, files=files, method="PATCH")
+        finally:
+            # Restore previous headers
+            if prev_referer: self.session.headers["Referer"] = prev_referer
+            if prev_origin: self.session.headers["Origin"] = prev_origin
+
         if r is None:
             return False
         if r.status_code in (200, 204):
             print(f"[Uploader] Description updated for asset {asset_id}.")
             return True
+        
         print(f"[Uploader] Description update failed (HTTP {r.status_code}): {r.text[:200]}")
         return False
 
     def configure_sale(self, asset_id: int) -> bool:
-        """Set the uploaded shirt for sale at self.price Robux. Returns True on success."""
+        """Set the uploaded asset for sale at self.price Robux. Returns True on success."""
         print(f"[Uploader] Setting asset {asset_id} on sale for {self.price} Robux ...")
-        payload = {"isForSale": True, "priceInRobux": self.price}
+        
+        # 1. Try modern release-to-marketplace (preferred for 2025)
+        publish_url = f"https://itemconfiguration.roblox.com/v1/assets/{asset_id}/release-to-marketplace"
+        payload = {"price": int(self.price), "saleStatus": "OnSale"}
 
-        r = self._post_with_retry(
-            f"https://itemconfiguration.roblox.com/v1/assets/{asset_id}/configure",
-            json=payload,
-            method="PATCH",
-        )
-
-        if r is None:
-            print("[Uploader] Sale config failed after all retries.")
-            return False
-
-        if r.status_code in (200, 204):
-            print(f"[Uploader] Asset {asset_id} is now on sale for {self.price} Robux!")
+        r = self._post_with_retry(publish_url, json=payload, method="POST")
+        if r and r.status_code in (200, 204):
+            print(f"[Uploader] Asset {asset_id} successfully RELEASED to marketplace!")
             return True
-        else:
-            print(f"[Uploader] Sale config failed (HTTP {r.status_code}): {r.text[:300]}")
-            return False
+        
+        # 2. Fallback to basic configure endpoint
+        print(f"[Uploader] Release endpoint failed ({r.status_code if r else 'None'}). Trying configure PATCH...")
+        config_url = f"https://itemconfiguration.roblox.com/v1/assets/{asset_id}/configure"
+        payload_legacy = {"isForSale": True, "priceInRobux": int(self.price)}
+        
+        r = self._post_with_retry(config_url, json=payload_legacy, method="PATCH")
+        if r and r.status_code in (200, 204):
+            print(f"[Uploader] Asset {asset_id} is now ON SALE (via fallback).")
+            return True
+        
+        print(f"[Uploader] FAILED to set asset {asset_id} on sale.")
+        if r:
+            print(f"[Uploader] Response ({r.status_code}): {r.text[:200]}")
+        return False
 
     def upload_and_sell(self, image_path: str, name: str, description: str = "",
                         item_type: int = 11) -> int | None:
-        """
-        Full pipeline: upload → short pause → set on sale.
-        Returns the new assetId on full success, or None on failure.
-        """
+        """Upload asset. Publishing (On Sale) is now handled manually by the user."""
         asset_id = self.upload_asset(image_path, name, description, item_type)
-        if not asset_id:
-            return None
-
-        # Brief pause between upload and sale config
-        time.sleep(random.uniform(3, 7))
-
-        sale_ok = self.configure_sale(asset_id)
-        return asset_id if sale_ok else None
+        return asset_id

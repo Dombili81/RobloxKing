@@ -13,4 +13,7 @@ env/
 .env
 
 # Project specific
+/downloads
+/output
 *.log
+firebase-key.json

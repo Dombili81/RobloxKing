@@ -47,21 +47,12 @@ def load_roblox_config(path="config.txt"):
         "DELAY_MIN": int(os.environ.get("DELAY_MIN", 45)),
         "DELAY_MAX": int(os.environ.get("DELAY_MAX", 90)),
         "MAX_UPLOADS_PER_SESSION": int(os.environ.get("MAX_UPLOADS_PER_SESSION", 10)),
-        # Search sort defaults: Best Selling, All Time
+        "TARGET_PAIRS": int(os.environ.get("TARGET_PAIRS", 5)),
         "SORT_TYPE": int(os.environ.get("SORT_TYPE", 2)),
         "SORT_AGG": int(os.environ.get("SORT_AGG", 5)),
     }
     
-    # 1. First, check Firebase for persistent settings
-    cloud_settings = db_manager.load_settings()
-    for k in ["GROUP_ID", "PRICE", "DELAY_MIN", "DELAY_MAX", "MAX_UPLOADS_PER_SESSION"]:
-        if k in cloud_settings:
-            try:
-                cfg[k] = int(cloud_settings[k])
-            except ValueError:
-                pass
-
-    # 2. Then check local file (only valid if developing locally)
+    # 1. Local file (overwrites Env Vars)
     if os.path.exists(path):
         with open(path) as f:
             for line in f:
@@ -69,22 +60,30 @@ def load_roblox_config(path="config.txt"):
                 if "=" in line and not line.startswith("#"):
                     k, _, v = line.partition("=")
                     k = k.strip()
-                    if k in cfg: # File always overwrites Env Vars
+                    if k in cfg:
                         try:
-                            # If the file has a default value (like GROUP_ID=0)
-                            # and env var has a real value, keep env var. Otherwise overwrite.
-                            val = int(v.strip())
-                            if val != 0 and val != 5 and val != 45 and val != 90 and val != 10:
-                                cfg[k] = val
-                            elif not os.environ.get(k): 
-                                cfg[k] = val
+                            cfg[k] = int(v.strip())
                         except ValueError:
                             pass
+
+    # 2. Cloud Settings (Overwrites EVERYTHING except if cloud value is 0 for critical IDs)
+    cloud_settings = db_manager.load_settings()
+    for k in ["GROUP_ID", "PRICE", "DELAY_MIN", "DELAY_MAX", "TARGET_PAIRS"]:
+        if k in cloud_settings:
+            try:
+                val = int(cloud_settings[k])
+                # If cloud has a '0' for GROUP_ID but local has a real ID, keep the local one.
+                if k == "GROUP_ID" and val == 0 and cfg[k] != 0:
+                    continue
+                cfg[k] = val
+            except ValueError:
+                pass
+                
     return cfg
 
 def save_roblox_config(cfg, path="config.txt"):
     for k, v in cfg.items():
-        if k in ["GROUP_ID", "PRICE", "DELAY_MIN", "DELAY_MAX", "MAX_UPLOADS_PER_SESSION", "SORT_TYPE", "SORT_AGG"]:
+        if k in ["GROUP_ID", "PRICE", "DELAY_MIN", "DELAY_MAX", "TARGET_PAIRS", "SORT_TYPE", "SORT_AGG"]:
             db_manager.save_setting(k, v)
 
     with open(path, "w") as f:
@@ -93,7 +92,7 @@ def save_roblox_config(cfg, path="config.txt"):
             f"PRICE={cfg['PRICE']}\n"
             f"DELAY_MIN={cfg['DELAY_MIN']}\n"
             f"DELAY_MAX={cfg['DELAY_MAX']}\n"
-            f"MAX_UPLOADS_PER_SESSION={cfg['MAX_UPLOADS_PER_SESSION']}\n"
+            f"TARGET_PAIRS={cfg['TARGET_PAIRS']}\n"
             f"SORT_TYPE={cfg['SORT_TYPE']}\n"
             f"SORT_AGG={cfg['SORT_AGG']}\n"
         )
@@ -136,7 +135,8 @@ WAITING_PAIRS    = 4
 # ─── Job state ────────────────────────────────────────────────────────────────
 _job_stop  = threading.Event()
 _job_info  = {"status": "idle", "keywords": [], "pairs_done": 0, "uploads": 0}
-TARGET_PAIRS = 5
+_initial_cfg = load_roblox_config()
+TARGET_PAIRS = _initial_cfg.get("TARGET_PAIRS", 5)
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 def is_allowed(update: Update) -> bool:
@@ -208,14 +208,28 @@ WELCOME = (
 # ─── /start ───────────────────────────────────────────────────────────────────
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return await deny(update)
-    await update.message.reply_text(WELCOME, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
+    status = "AKTİF ✅" if db_manager.is_active else "DEVRE DIŞI ❌ (Anahtar Eksik)"
+    msg = f"{WELCOME}\n\n🛰 **Firebase Durumu:** {status}"
+    await update.message.reply_text(msg, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
+
+async def cmd_debug_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    cfg = load_roblox_config()
+    save_roblox_config(cfg)
+    status = "BAŞARILI ✅" if db_manager.is_active else "BAŞARISIZ ❌ (Firebase Bağlı Değil)"
+    await update.message.reply_text(f"🔄 **Manuel Senkronizasyon:** {status}\n\nFirebase'e itilen değerler:\n`GROUP_ID: {cfg['GROUP_ID']}`\n`TARGET_PAIRS: {cfg['TARGET_PAIRS']}`", parse_mode="Markdown")
 
 # ─── Callback router ─────────────────────────────────────────────────────────
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return await deny(update)
     q    = update.callback_query
     data = q.data
-    await q.answer()
+    
+    # Wrap answer in try-except to avoid "Query too old" errors after restarts
+    try:
+        await q.answer()
+    except Exception:
+        pass
 
     # ── Ana Menü ──
     if data == "main":
@@ -392,9 +406,14 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "1. Roblox'a giriş yap\n"
             "2. Tarayıcıda `F12` → `Application` sekmesi\n"
             "3. `Cookies` → `.ROBLOSECURITY` değerini kopyala\n"
-            "4. `cookie.txt` dosyasına yapıştır\n\n"
-            "⚠️ Cookie'nin süresi zaman zaman dolabilir. "
-            "Bot hata verirse yeni cookie al ve `cookie.txt`'i güncelle.",
+            "4. Bu bottan Ayarlar → Cookie'ye yapıştır\n\n"
+            "🕐 *Ne zaman yenilemem lazım?*\n"
+            "Sabit bir süre yok. Cookie şu durumlarda düşer:\n"
+            "• Şifre değiştirdiğinde\n"
+            "• \"Tüm cihazlardan çıkış\" yaptığında\n"
+            "• Roblox uzun süre kullanılmayınca oturumu sonlandırırsa\n"
+            "• Bot \"indirilemedi\" / 401 hatası verince\n\n"
+            "Yani sadece _hata aldığında_ veya güvenlik işlemi yaptığında yenilemen yeterli.",
             reply_markup=help_keyboard(), parse_mode="Markdown"
         )
 
@@ -447,7 +466,11 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ 1–30 arasında bir sayı gir.", reply_markup=settings_keyboard())
             return
         TARGET_PAIRS = n
-        await update.message.reply_text(f"✅ Her keyword için `{TARGET_PAIRS}` çift indirilecek.", reply_markup=settings_keyboard(), parse_mode="Markdown")
+        cfg = load_roblox_config()
+        cfg["TARGET_PAIRS"] = n
+        save_roblox_config(cfg)
+        print(f"[Firebase] Saved TARGET_PAIRS={n}")
+        await update.message.reply_text(f"✅ Her keyword için `{TARGET_PAIRS}` çift indirilecek.\n(Ayarlar Firebase'e kaydedildi: {n})", reply_markup=settings_keyboard(), parse_mode="Markdown")
 
     elif awaiting == "cookie":
         ctx.user_data["awaiting"] = None
@@ -603,8 +626,6 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, preview_fn, loop, target_
             )
             pairs_found = 0
 
-            inner_loop = asyncio.new_event_loop()
-
             async def process_keyword():
                 nonlocal pairs_found, upload_count
 
@@ -612,90 +633,131 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, preview_fn, loop, target_
                 pants_pool = await roblox.search_and_get_assets(keyword, count=40, asset_type=12)
                 used_pants_ids = set()
 
-                async for asset_id, item_url, creator in roblox.search_and_yield_assets(keyword):
-                    if _job_stop.is_set() or pairs_found >= target_pairs:
-                        break
+                def match_pair_fast(s_name, s_creator, pool):
+                    """Matches by creator and name similarity (FAST)"""
+                    import re
+                    s_clean = re.sub(r'shirt', '', s_name, flags=re.IGNORECASE).strip().lower()
+                    for p_id, p_url, p_creator, p_name in pool:
+                        p_clean = re.sub(r'pants|pant', '', p_name, flags=re.IGNORECASE).strip().lower()
+                        # If same creator and names are very similar, it's a match
+                        if s_creator == p_creator and (s_clean in p_clean or p_clean in s_clean):
+                            return p_id
+                    return None
 
-                    # Try Method A: Direct link in description (Best)
-                    try:
-                        paired_pants = await roblox.get_paired_pants(asset_id, keyword)
-                    except Exception:
-                        paired_pants = []
+                search_gen = roblox.search_and_yield_assets(keyword)
+                try:
+                    async for asset_id, item_url, creator, current_item_name in search_gen:
+                        if _job_stop.is_set() or pairs_found >= target_pairs:
+                            break
 
-                    pants_id = None
+                        # Step 2A: Try Fast Name Matching (No API call)
+                        pants_id = match_pair_fast(current_item_name, creator, pants_pool)
+                        
+                        if pants_id:
+                            print(f"[Match] Found via name similarity: {current_item_name} <-> {pants_id}")
+                        else:
+                            # Step 2B: Fallback to Direct link in description (Slow API call)
+                            try:
+                                paired_pants = await roblox.get_paired_pants(asset_id, keyword)
+                                if paired_pants:
+                                    pants_id, _ = paired_pants[0]
+                                    print(f"[Match] Found via direct link: {asset_id} <-> {pants_id}")
+                            except Exception:
+                                pass
 
-                    if paired_pants:
-                        pants_id, _ = paired_pants[0]
-                        print(f"[Match] Found via direct link: {asset_id} <-> {pants_id}")
+                        if not pants_id:
+                            # Eğer açıklamada doğrudan link yoksa bu shirt'i tamamen atla,
+                            # böylece rastgele/uyuşmayan pantolonlarla eşleşme yapılmaz.
+                            print(f"[Match] Skipping shirt {asset_id} — no explicit paired pants link found.")
+                            continue
 
-                    if not pants_id:
-                        # Eğer açıklamada doğrudan link yoksa bu shirt'i tamamen atla,
-                        # böylece rastgele/uyuşmayan pantolonlarla eşleşme yapılmaz.
-                        print(f"[Match] Skipping shirt {asset_id} — no explicit paired pants link found.")
-                        continue
+                        used_pants_ids.add(pants_id)
 
-                    used_pants_ids.add(pants_id)
-
-                    pairs_found += 1
-                    _job_info["pairs_done"] = pairs_found
-
-                    send(
-                        f"✅ *{keyword.title()}* için çift bulundu!\n\n"
-                        f"• 🔢 Çift sayısı: `{pairs_found}/{target_pairs}`\n"
-                        f"• 👕 Shirt ID: `{asset_id}`\n"
-                        f"• 👖 Pants ID: `{pants_id}`\n\n"
-                        f"🎨 Tasarım uygulanıyor…"
-                    )
-
-                    shirt_label = f"{keyword.replace(' ', '_')}_shirt{pairs_found}"
-                    shirt_out = await download_and_design(
-                        asset_id, keyword, "shirt", downloader, designer, custom_label=shirt_label
-                    )
-                    if not shirt_out:
-                        send(f"❌ Shirt indirme başarısız: `{asset_id}`")
-                        continue
-
-                    pants_label = f"{keyword.replace(' ', '_')}_pants{pairs_found}"
-                    pants_out = await download_and_design(
-                        pants_id, keyword, "pants", downloader, designer, custom_label=pants_label
-                    )
-                    if not pants_out:
-                        send(f"❌ Pants indirme başarısız: `{pants_id}`")
-                        continue
-
-                    # Test amaçlı: üretilen görselleri kısa süreliğine Telegram'a at
-                    preview(shirt_out, f"👕 *Shirt Preview* (Pair {pairs_found})\n`{shirt_out}`")
-                    preview(pants_out, f"👖 *Pants Preview* (Pair {pairs_found})\n`{pants_out}`")
-
-                    send(
-                        f"🎨 Tasarım tamamlandı!\n\n"
-                        f"• 👕 Shirt ID: `{asset_id}`\n"
-                        f"• 👖 Pants ID: `{pants_id}`\n\n"
-                        f"☁️ Şimdi gruba yükleniyor…"
-                    )
-
-                    if uploader:
-                        send("☁️ Yükleniyor… _(Anti-ban bekleme başlıyor)_")
-                        upload_count = await upload_pair_with_crosslink(
-                            asset_id, shirt_out, pants_id, pants_out,
-                            keyword, uploader, upload_count, cfg
-                        )
-                        _job_info["uploads"] = upload_count
+                        pairs_found += 1
+                        _job_info["pairs_done"] = pairs_found
 
                         send(
-                            f"🔗 Yükleme tamamlandı ve açıklamalar çapraz linklendi!\n\n"
-                            f"• 📦 Bu oturumda yüklenen toplam item: `{upload_count}`\n"
-                            f"• 🔢 İşlenen çift: `{pairs_found}/{target_pairs}`\n\n"
-                            f"🔍 Yeni çiftler aranıyor…"
+                            f"✅ *{keyword.title()}* için çift bulundu!\n\n"
+                            f"• 🔢 Çift sayısı: `{pairs_found}/{target_pairs}`\n"
+                            f"• 👕 Shirt ID: `{asset_id}`\n"
+                            f"• 👖 Pants ID: `{pants_id}`\n\n"
+                            f"🎨 Tasarım uygulanıyor…"
                         )
 
-                if pairs_found >= target_pairs:
-                    send(f"🏁 `{keyword.title()}` için {target_pairs} çift tamamlandı!")
-                elif pairs_found == 0:
-                    send(f"😕 `{keyword.title()}` için eşleşen çift bulunamadı.")
+                        shirt_label = f"{keyword.replace(' ', '_')}_shirt{pairs_found}"
+                        shirt_out = await download_and_design(
+                            asset_id, keyword, "shirt", downloader, designer, custom_label=shirt_label
+                        )
+                        if not shirt_out:
+                            send(f"❌ Shirt indirme başarısiz: `{asset_id}`")
+                            continue
 
-            inner_loop.run_until_complete(process_keyword())
-            inner_loop.close()
+                        pants_label = f"{keyword.replace(' ', '_')}_pants{pairs_found}"
+                        pants_out = await download_and_design(
+                            pants_id, keyword, "pants", downloader, designer, custom_label=pants_label
+                        )
+                        if not pants_out:
+                            send(f"❌ Pants indirme başarısız: `{pants_id}`")
+                            continue
+
+                        # Satışa koyarken kullanılacak başlık ve açıklama; önizlemede link yok, placeholder göster
+                        shirt_name, shirt_desc = generate_metadata(keyword, "shirt", pair_url="Buraya link gelecek")
+                        pants_name, pants_desc = generate_metadata(keyword, "pants", pair_url="Buraya link gelecek")
+                        def _trunc(s: str, max_len: int = 480) -> str:
+                            s = (s or "").strip().replace("`", "'")
+                            return (s[:max_len] + "…") if len(s) > max_len else s
+                        # Test amaçlı: fotoğraf + satış başlığı/açıklaması, 30 sn sonra silinecek
+                        cap_shirt = (
+                            f"👕 *Shirt* (Çift {pairs_found})\n\n"
+                            f"*Satış başlığı:*\n`{shirt_name}`\n\n"
+                            f"*Satış açıklaması:*\n`{_trunc(shirt_desc)}`"
+                        )
+                        cap_pants = (
+                            f"👖 *Pants* (Çift {pairs_found})\n\n"
+                            f"*Satış başlığı:*\n`{pants_name}`\n\n"
+                            f"*Satış açıklaması:*\n`{_trunc(pants_desc)}`"
+                        )
+                        preview(shirt_out, cap_shirt)
+                        preview(pants_out, cap_pants)
+
+                        send(
+                            f"🎨 Tasarım tamamlandı!\n\n"
+                            f"• 👕 Shirt ID: `{asset_id}`\n"
+                            f"• 👖 Pants ID: `{pants_id}`\n\n"
+                            f"☁️ Şimdi gruba yükleniyor…"
+                        )
+
+                        if uploader:
+                            send("☁️ Yükleniyor… _(Anti-ban bekleme başlıyor)_")
+                            upload_count = await upload_pair_with_crosslink(
+                                asset_id, shirt_out, pants_id, pants_out,
+                                keyword, uploader, upload_count, cfg
+                            )
+                            _job_info["uploads"] = upload_count
+                            
+                            # Only say "searching" if we haven't reached the target yet
+                            if pairs_found < target_pairs:
+                                send(
+                                    f"🔗 Yükleme tamamlandı ve açıklamalar çapraz linklendi!\n\n"
+                                    f"• 📦 Bu oturumda yüklenen toplam item: `{upload_count}`\n"
+                                    f"• 🔢 İşlenen çift: `{pairs_found}/{target_pairs}`\n\n"
+                                    f"🔍 Yeni çiftler aranıyor…"
+                                )
+                            else:
+                                send(
+                                    f"🔗 Yükleme ve linkleme tamamlandı!\n\n"
+                                    f"• 📦 Toplam yüklenen item: `{upload_count}`\n"
+                                    f"• 🔢 Hedeflenen `{target_pairs}` çift başariyla işlendi."
+                                )
+                finally:
+                    await search_gen.aclose()
+
+            asyncio.run(process_keyword())
+
+            if pairs_found >= target_pairs:
+                send(f"🏁 `{keyword.title()}` için {target_pairs} çift tamamlandı!")
+            elif pairs_found == 0:
+                send(f"😕 `{keyword.title()}` için eşleşen çift bulunamadı.")
 
     except Exception as e:
         print(f"BÜYÜK HATA (Arkaplan İşi): {e}")
@@ -705,7 +767,7 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, preview_fn, loop, target_
         _job_info["status"] = "idle"
 
     send(
-        f"✅ *İş Tamamlandı!*\n\n"
+        f"✅ *Yükleme Tamamlandı!*\n\n"
         f"📦 Bu oturumda toplamdaki yüklenen item sayısı: `{upload_count}`\n\n"
         f"🧭 Yeni bir arama başlatmak veya ayarları değiştirmek için ana menüye dönebilirsin.",
         reply_markup=back_keyboard()
@@ -764,15 +826,32 @@ def run_dummy_server():
     server = HTTPServer(('0.0.0.0', port), DummyHandler)
     server.serve_forever()
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    print(f"⚠️ Bot Hatası: {context.error}")
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     if not BOT_TOKEN:
         print("HATA: bot_config.txt içinde BOT_TOKEN bulunamadı!")
         return
         
+    # Start dummy server for hosting platforms
     threading.Thread(target=run_dummy_server, daemon=True).start()
 
-    print(f"🤖 Bot başlatılıyor… (Allowed ID: {ALLOWED_ID})")
+    import datetime
+    now = datetime.datetime.now().strftime("%H:%M:%S")
+    print("\n" + "="*50)
+    print(f"🚀 ROBLOX BOT BAŞLATILDI [{now}]")
+    print("="*50)
+    
+    status_fb = "AKTİF ✅" if db_manager.is_active else "DEVRE DIŞI ❌ (Anahtar dosyası eksik)"
+    print(f"🛰 Firebase Bağlantısı: {status_fb}")
+    
+    if not db_manager.is_active:
+        print("❗ UYARI: Firebase-key.json bulunamadı. Değişiklikler buluta işlenmeyecek!")
+    
+    print(f"🤖 Allowed ID: {ALLOWED_ID}")
+    print("="*50 + "\n")
 
     # job_queue'yu aktif etmek için builder yeterli, timeout artırıldı
     app = (
@@ -783,17 +862,33 @@ def main():
         .build()
     )
 
+    # 1. Register Handlers IMMEDIATELY
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("debug_sync", cmd_debug_sync))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_error_handler(error_handler)
 
-    print("✅ Bot hazır! Arkaplan takip sistemi başlatılıyor...")
-    
-    # Start live sale loop every 60 seconds (PTB Native JobQueue)
+    # 2. Sync Configuration
+    print("🔄 Ayarlar yükleniyor/senkronize ediliyor...")
+    current_cfg = load_roblox_config()
+    print(f"✅ Ayarlar hazır (Grup: {current_cfg['GROUP_ID']}, Hedef: {current_cfg['TARGET_PAIRS']})")
+    save_roblox_config(current_cfg)
+
+    # 3. Start Background Tasks
     if app.job_queue:
         app.job_queue.run_repeating(live_sale_notifier_job, interval=60, first=10)
+
+    print("✅ Bot hazır! Telegram üzerinden komut bekleniyor...")
     
-    app.run_polling()
+    try:
+        app.run_polling(drop_pending_updates=True)
+    except KeyboardInterrupt:
+        print("\n🛑 Bot kullanıcı tarafından durduruldu (Ctrl+C).")
+    except Exception as e:
+        print(f"\n❌ Kritik Hata: {e}")
+    finally:
+        print("👋 Kapanıyor...")
 
 if __name__ == "__main__":
     main()

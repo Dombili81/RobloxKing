@@ -9,6 +9,18 @@ class AssetDownloader:
         # Firebase üzerinden merkezi cookie yönetimi (Render dahil her ortamda aynı)
         self.db = FirebaseManager()
 
+    def _normalize_cookie(self, raw: str) -> str | None:
+        """Cookie stringini temizle; kopyalarken giren tırnak vb. hataları düzelt."""
+        if not raw:
+            return None
+        raw = str(raw).strip().strip('"').strip("'")
+        # Roblox cookie'de sık yapılan hata: WARNING:"-DO → WARNING:-DO
+        if 'WARNING:"-DO' in raw or "WARNING:\"-DO" in raw:
+            raw = raw.replace('WARNING:"-DO', "WARNING:-DO").replace('WARNING:\"-DO', "WARNING:-DO")
+        if raw.startswith(".ROBLOSECURITY="):
+            raw = raw[len(".ROBLOSECURITY="):]
+        return raw if raw else None
+
     def _load_cookie(self) -> str | None:
         """
         Cookie öncelik sırası:
@@ -24,28 +36,25 @@ class AssetDownloader:
 
         raw = cloud.get("ROBLOX_COOKIE")
         if raw:
-            raw = str(raw).strip().strip('"').strip("'")
-            if raw.startswith(".ROBLOSECURITY="):
-                return raw[len(".ROBLOSECURITY="):]
-            return raw
+            out = self._normalize_cookie(raw)
+            if out:
+                return out
 
         # 2. Env var
         env_cookie = os.environ.get("ROBLOX_COOKIE")
         if env_cookie:
-            env_cookie = env_cookie.strip().strip('"').strip("'")
-            if env_cookie.startswith(".ROBLOSECURITY="):
-                return env_cookie[len(".ROBLOSECURITY="):]
-            return env_cookie
+            out = self._normalize_cookie(env_cookie)
+            if out:
+                return out
 
         # 3. Local file (dev)
         if os.path.exists("cookie.txt"):
             try:
                 with open("cookie.txt", "r", encoding="utf-8") as f:
-                    file_cookie = f.read().strip().strip('"').strip("'")
-                if file_cookie:
-                    if file_cookie.startswith(".ROBLOSECURITY="):
-                        return file_cookie[len(".ROBLOSECURITY="):]
-                    return file_cookie
+                    file_cookie = f.read()
+                out = self._normalize_cookie(file_cookie)
+                if out:
+                    return out
             except Exception:
                 pass
 
@@ -114,13 +123,43 @@ class AssetDownloader:
                         img_urls = [img_url, img_url.replace("roblox.com", "roproxy.com")]
                         
                         for i_url in img_urls:
+                            # Also try image fetch with and without cookies if 401
                             img_resp = requests.get(i_url, headers=headers, timeout=10)
+                            if img_resp.status_code == 401 and cookie:
+                                print(f"  [Downloader] Image retry without cookie (401 Fallback)...")
+                                img_resp = requests.get(i_url, timeout=10)
+
                             if img_resp.status_code == 200 and img_resp.content.startswith(b"\x89PNG"):
                                 with open(path, "wb") as f:
                                     f.write(img_resp.content)
                                 print(f"Download success via Image ID: {image_id}")
                                 return path
                 
+                elif response.status_code == 401 and cookie:
+                    print(f"  [Downloader] Auth failed (401). Retrying without cookie...")
+                    resp_no_auth = requests.get(url, timeout=10, allow_redirects=True)
+                    if resp_no_auth.status_code == 200:
+                        content = resp_no_auth.content
+                        if content.startswith(b"\x89PNG") or b"rbxassetid" in content or b"id=" in content:
+                            # Recursive-ish check or just handle here (PNG only for simplicity in fallback)
+                            if content.startswith(b"\x89PNG"):
+                                with open(path, "wb") as f:
+                                    f.write(content)
+                                print("Download success (Fallback No-Auth).")
+                                return path
+                            # If it's XML, we can try to find the ID again
+                            text_na = content.decode("utf-8", errors="ignore")
+                            match_na = re.search(r"rbxassetid://(\d+)", text_na) or re.search(r"id=(\d+)", text_na)
+                            if match_na:
+                                img_id_na = match_na.group(1)
+                                i_url_na = f"https://assetdelivery.roblox.com/v1/asset/?id={img_id_na}"
+                                img_r_na = requests.get(i_url_na, timeout=10)
+                                if img_r_na.status_code == 200 and img_r_na.content.startswith(b"\x89PNG"):
+                                    with open(path, "wb") as f:
+                                        f.write(img_r_na.content)
+                                    print(f"Download success via Fallback Image ID: {img_id_na}")
+                                    return path
+
                 print(f"Request failed (Status: {response.status_code})")
             except Exception as e:
                 print(f"Error during request: {e}")
