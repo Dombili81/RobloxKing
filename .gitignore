@@ -15,8 +15,9 @@ env/
 .env
 
 # Project specific
-downloads/
-output/
-
+downloads/*
+!downloads/.gitkeep
+output/*
+!output/.gitkeep
 *.log
 firebase-key.json
