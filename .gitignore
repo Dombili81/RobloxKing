@@ -3,6 +3,7 @@ cookie.txt
 bot_config.txt
 config.txt
 template.png
+walkthrough.md
 
 # Python
 __pycache__/
@@ -14,7 +15,8 @@ env/
 .env
 
 # Project specific
-/downloads
-/output
+downloads/
+output/
+
 *.log
 firebase-key.json

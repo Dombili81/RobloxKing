@@ -2,6 +2,7 @@ import requests
 import os
 import time
 import random
+from scrapers.utils import Logger
 
 class AssetUploader:
     """
@@ -66,7 +67,7 @@ class AssetUploader:
     def _random_delay(self, label: str = ""):
         """Wait a random number of seconds between delay_min and delay_max."""
         wait = random.uniform(self.delay_min, self.delay_max)
-        print(f"[Uploader] Anti-ban delay{': ' + label if label else ''}: {wait:.1f}s ...")
+        Logger.debug(f"Anti-ban gecikmesi ({label}): {wait:.1f}s ...")
         time.sleep(wait)
 
     def _post_with_retry(self, url, *, data=None, json=None, files=None,
@@ -96,7 +97,7 @@ class AssetUploader:
             # Roblox rate-limit → 429
             if r.status_code == 429:
                 retry_after = int(r.headers.get("Retry-After", backoff))
-                print(f"[Uploader] Rate limited! Waiting {retry_after}s before retry...")
+                Logger.warn(f"Hız limitine takıldı! {retry_after}s bekleniyor...")
                 time.sleep(retry_after)
                 backoff = max(backoff, retry_after) * 2
                 continue
@@ -142,7 +143,7 @@ class AssetUploader:
             except Exception as e:
                 print(f"[Uploader] Polling error: {e}")
         
-        print("[Uploader] Polling timed out.")
+        Logger.debug("Polling zaman aşımı.")
         return None
 
     def upload_asset(self, image_path: str, name: str, description: str = "", item_type: int = 11) -> int | None:
@@ -158,7 +159,7 @@ class AssetUploader:
             return None
 
         type_label = "Shirt" if item_type == 11 else "Pants"
-        print(f"[Uploader] Uploading {type_label} '{name}' → group {self.group_id} (Modern API) ...")
+        Logger.upload(f"{type_label} yükleniyor: '{name}' (Grup: {self.group_id})")
 
         import json
         request_data = {
@@ -198,7 +199,7 @@ class AssetUploader:
                 if prev_origin: self.session.headers["Origin"] = prev_origin
 
         if r is None:
-            print("[Uploader] Upload failed after all retries.")
+            Logger.error("Tüm denemelere rağmen yükleme başarısız.")
             return None
 
         if r.status_code in (200, 201):
@@ -213,8 +214,8 @@ class AssetUploader:
                     return asset_id
             return None
         else:
-            print(f"[Uploader] Upload FAILED (HTTP {r.status_code})")
-            print(f"[Uploader] Response: {r.text[:500]}")
+            Logger.error(f"Yükleme BAŞARISIZ (HTTP {r.status_code})")
+            Logger.debug(f"Response: {r.text[:500]}")
             return None
 
     # Keep backward-compat alias
@@ -223,7 +224,7 @@ class AssetUploader:
 
     def update_description(self, asset_id: int, name: str, description: str, item_type: int = 11) -> bool:
         """Update name and description of an already-uploaded asset using modern apis.roblox.com."""
-        print(f"[Uploader] Updating description for asset {asset_id} (Modern API) ...")
+        Logger.debug(f"Açıklama güncelleniyor (Asset: {asset_id})")
         
         url = f"https://apis.roblox.com/assets/user-auth/v1/assets/{asset_id}?updateMask=description"
         import json
@@ -257,15 +258,15 @@ class AssetUploader:
         if r is None:
             return False
         if r.status_code in (200, 204):
-            print(f"[Uploader] Description updated for asset {asset_id}.")
+            Logger.success(f"Açıklama güncellendi (Asset: {asset_id}).")
             return True
         
-        print(f"[Uploader] Description update failed (HTTP {r.status_code}): {r.text[:200]}")
+        Logger.warn(f"Açıklama güncellenemedi (HTTP {r.status_code})")
         return False
 
     def configure_sale(self, asset_id: int) -> bool:
         """Set the uploaded asset for sale at self.price Robux. Returns True on success."""
-        print(f"[Uploader] Setting asset {asset_id} on sale for {self.price} Robux ...")
+        Logger.debug(f"Ürün satışa çıkarılıyor ({asset_id}, Fiyat: {self.price})")
         
         # 1. Try modern release-to-marketplace (preferred for 2025)
         publish_url = f"https://itemconfiguration.roblox.com/v1/assets/{asset_id}/release-to-marketplace"
@@ -283,12 +284,10 @@ class AssetUploader:
         
         r = self._post_with_retry(config_url, json=payload_legacy, method="PATCH")
         if r and r.status_code in (200, 204):
-            print(f"[Uploader] Asset {asset_id} is now ON SALE (via fallback).")
+            Logger.success(f"Satış aktif: {asset_id}")
             return True
         
-        print(f"[Uploader] FAILED to set asset {asset_id} on sale.")
-        if r:
-            print(f"[Uploader] Response ({r.status_code}): {r.text[:200]}")
+        Logger.error(f"Satışa çıkarma BAŞARISIZ ({asset_id}).")
         return False
 
     def upload_and_sell(self, image_path: str, name: str, description: str = "",

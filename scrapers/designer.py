@@ -1,5 +1,6 @@
 from PIL import Image
 import os
+from scrapers.utils import Logger
 
 class TemplateDesigner:
     def __init__(self):
@@ -8,9 +9,8 @@ class TemplateDesigner:
     async def process_image(self, asset_path, template_path, output_dir="output", custom_filename=None):
         """
         Processes image merging locally using Pillow.
-        Removing dependency on arena.site.
         """
-        print(f"Processing local image merge: {os.path.basename(asset_path)} + {os.path.basename(template_path)}")
+        Logger.design(f"Görüntü birleştiriliyor: {os.path.basename(asset_path)}")
         
         try:
             # Open images
@@ -20,7 +20,7 @@ class TemplateDesigner:
             # Ensure they are same size
             # Usually Roblox templates are 585x559
             if asset_img.size != template_img.size:
-                print(f"Resizing template from {template_img.size} to match asset {asset_img.size}")
+                Logger.debug(f"Şablon boyutu uyduruluyor: {template_img.size} -> {asset_img.size}")
                 template_img = template_img.resize(asset_img.size, Image.Resampling.LANCZOS)
             
             # Merge logic: Template is usually an overlay (logo/frame) on the Asset
@@ -43,9 +43,9 @@ class TemplateDesigner:
             os.makedirs(output_dir, exist_ok=True)
             combined.save(output_path, "PNG")
             
-            print(f"Local merge complete. Saved to: {output_path}")
+            Logger.success(f"Birleştirme tamamlandı: {os.path.basename(output_path)}")
             return output_path
             
         except Exception as e:
-            print(f"Error in local image processing: {e}")
+            Logger.error(f"Görüntü işleme hatası: {e}")
             return None

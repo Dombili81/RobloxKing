@@ -1,5 +1,6 @@
 import requests
 import re
+from scrapers.utils import Logger
 
 class RobloxScraper:
     def __init__(self, cookie=None, sort_type: int = 2, sort_agg: int = 5):
@@ -24,9 +25,9 @@ class RobloxScraper:
                 if csrf:
                     self.session.headers["X-CSRF-TOKEN"] = csrf
                     self.has_auth = True
-                    print("[RobloxScraper] Authenticated session started with CSRF token.")
+                    Logger.success("Roblox oturumu başarıyla doğrulandı (CSRF aktif).")
             except Exception as e:
-                print(f"[RobloxScraper] Failed to init authenticated session: {e}")
+                Logger.error(f"Oturum doğrulama başarısız: {e}")
 
     def _request_with_retry(self, method, url, max_retries=3, initial_delay=2, **kwargs):
         """Helper to handle 429 Rate Limit with exponential backoff."""
@@ -41,13 +42,13 @@ class RobloxScraper:
                 
                 if r.status_code == 429:
                     wait_time = initial_delay * (2 ** attempt)
-                    print(f"⚠️ Rate limited (429)! Waiting {wait_time}s before retry {attempt+1}/{max_retries}...")
+                    Logger.warn(f"Oran limitine takıldı (429)! {wait_time}s bekleniyor ({attempt+1}/{max_retries})...")
                     time.sleep(wait_time)
                     attempt += 1
                     continue
                 return r
             except Exception as e:
-                print(f"Request error: {e}")
+                Logger.error(f"İstek hatası: {e}")
                 time.sleep(initial_delay)
                 attempt += 1
         return None
@@ -65,8 +66,8 @@ class RobloxScraper:
         await self.stop()
 
     async def search_and_get_assets(self, keyword, count=5, asset_type=11):
-        asset_name = "Classic Shirt" if asset_type == 11 else "Classic Pants"
-        print(f"Searching Roblox Marketplace for: {keyword} ({asset_name}s - Headless Mode)")
+        asset_name = "Shirt" if asset_type == 11 else "Pants"
+        Logger.search(f"Marketplace taranıyor: {keyword} ({asset_name})")
         
         found_assets = []
         cursor = ""
@@ -91,7 +92,7 @@ class RobloxScraper:
                     listings = data.get("data", [])
                     cursor = data.get("nextPageCursor")
                     
-                    print(f"DEBUG: Page {page+1} scanned. Found {len(listings)} raw items.")
+                    Logger.debug(f"Sayfa {page+1} tarandı. {len(listings)} ürün bulundu.")
                     
                     for item in listings:
                         if item.get("assetType") == asset_type:
@@ -103,29 +104,25 @@ class RobloxScraper:
                             item_name = item.get("name", "Asset")
                             creator_name = item.get("creatorName", "Unknown")
                             item_url = f"https://www.roblox.com/catalog/{asset_id}/"
-                            print(f"Adding {asset_name}: {item_name} (ID: {asset_id}) by {creator_name}")
+                            Logger.found(f"{item_name} (ID: {asset_id}) - Yapan: {creator_name}")
                             found_assets.append((asset_id, item_url, creator_name, item_name))
                             
                 else:
-                    print(f"DEBUG: Search failed (Status: {response.status_code})")
+                    Logger.debug(f"Arama başarısız (Status: {response.status_code})")
                     break
             except Exception as e:
-                print(f"DEBUG: Search error: {e}")
+                Logger.debug(f"Arama hatası: {e}")
                 break
                             
         if found_assets:
             return found_assets
         
-        print(f"No Classic Shirts found for keyword: {keyword}")
+        Logger.warn(f"'{keyword}' için ürün bulunamadı.")
         return []
 
     async def search_and_yield_assets(self, keyword, asset_type=11):
-        """
-        An async generator that yields (asset_id, item_url) continuously 
-        from the catalog search results until pages run out. 
-        """
-        asset_name = "Classic Shirt" if asset_type == 11 else "Classic Pants"
-        print(f"Searching Roblox Marketplace stream for: {keyword} ({asset_name}s)")
+        asset_name = "Shirt" if asset_type == 11 else "Pants"
+        Logger.search(f"{keyword} için stream başlatıldı ({asset_name})")
         
         cursor = ""
         url = "https://catalog.roblox.com/v1/search/items/details"
@@ -148,7 +145,7 @@ class RobloxScraper:
                     listings = data.get("data", [])
                     cursor = data.get("nextPageCursor")
                     
-                    print(f"DEBUG: Stream Page {page+1} scanned. Found {len(listings)} raw items.")
+                    Logger.debug(f"Stream Sayfa {page+1} tarandı. {len(listings)} ürün bulundu.")
                     
                     for item in listings:
                         if item.get("assetType") == asset_type:
@@ -160,15 +157,16 @@ class RobloxScraper:
                             item_name = item.get("name", "Asset")
                             creator_name = item.get("creatorName", "Unknown")
                             item_url = f"https://www.roblox.com/catalog/{asset_id}/"
+                            Logger.found(f"Sıradaki: {item_name} ({asset_id})")
                             yield (asset_id, item_url, creator_name, item_name)
                     
                     if not cursor:
                         break
                 else:
-                    print(f"DEBUG: Stream search failed (Status: {response.status_code})")
+                    Logger.debug(f"Stream arama başarısız (Status: {response.status_code})")
                     break
             except Exception as e:
-                print(f"DEBUG: Stream search error: {e}")
+                Logger.debug(f"Stream hatası: {e}")
                 break
 
     async def get_paired_pants(self, shirt_asset_id: str, keyword: str) -> list[tuple[str, str]]:
@@ -194,7 +192,7 @@ class RobloxScraper:
             )
             if not r or r.status_code != 200:
                 code = r.status_code if r else "Timeout"
-                print(f"[PairedPants] Could not fetch description for {shirt_asset_id}. Status: {code}")
+                Logger.warn(f"Açıklama alınamadı ({shirt_asset_id}). Status: {code}")
                 return []
             details = r.json()
             description = details.get("Description") or details.get("description") or ""
@@ -203,7 +201,7 @@ class RobloxScraper:
                 self._desc_cache[shirt_asset_id] = []
                 return []
         except Exception as e:
-            print(f"[PairedPants] Could not fetch description for {shirt_asset_id}: {e}")
+            Logger.error(f"Açıklama hatası ({shirt_asset_id}): {e}")
             return []
 
         if not description:
@@ -217,16 +215,17 @@ class RobloxScraper:
         # Eğer açıklamada birden fazla farklı katalog linki varsa,
         # yanlış/mix set riskini azaltmak için bu shirt'i tamamen atla.
         if len(set(found_ids)) != 1:
-            print(f"[PairedPants] Multiple distinct catalog IDs in description for shirt {shirt_asset_id}. Skipping to avoid mismatched pairs.")
+            Logger.warn(f"Açıklamada birden fazla ID bulundu ({shirt_asset_id}). Karışıklığı önlemek için atlanıyor.")
             return []
         
-        print(f"[PairedPants] Found {len(found_ids)} catalog link(s) in shirt description.")
+        
+        Logger.debug(f"PairedPants: Açıklamada {len(found_ids)} link bulundu.")
 
         import time
         # 3. Verify each linked asset is Classic Pants (assetType=12)
         pants_assets = []
         for linked_id in found_ids:
-            print(f"  [PairedPants] Extracted ID: {linked_id}. Verifying...")
+            Logger.debug(f"Pants ID doğrulanıyor: {linked_id}")
             
             try:
                 keyword_l = (keyword or "").lower()
@@ -244,7 +243,7 @@ class RobloxScraper:
                             # Hem asset tipini kontrol et, hem de isim içinde keyword geçsin
                             if asset_type == 12 and (not keyword_l or keyword_l in name_l):
                                 url = f"https://www.roblox.com/catalog/{linked_id}/"
-                                print(f"[PairedPants] SUCCESS: Matched Classic Pants: {name}")
+                                Logger.success(f"Eşleşen Pants bulundu: {name}")
                                 pants_assets.append((linked_id, url))
                             else:
                                 print(f"  [PairedPants] Ignored. AssetType is {asset_type} (not 12).")

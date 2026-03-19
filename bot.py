@@ -18,7 +18,8 @@ from scrapers.designer   import TemplateDesigner
 from scrapers.uploader   import AssetUploader
 from scrapers.finance    import GroupFinanceMonitor
 from scrapers.firebase_db import FirebaseManager
-from main import generate_metadata, download_and_design, upload_pair_with_crosslink
+from scrapers.utils import Logger
+from main import generate_metadata, download_and_design, upload_pair_with_crosslink, upload_single_asset
 
 # ─── Firebase Init ───────────────────────────────────────────────────────────
 db_manager = FirebaseManager()
@@ -50,6 +51,9 @@ def load_roblox_config(path="config.txt"):
         "TARGET_PAIRS": int(os.environ.get("TARGET_PAIRS", 5)),
         "SORT_TYPE": int(os.environ.get("SORT_TYPE", 2)),
         "SORT_AGG": int(os.environ.get("SORT_AGG", 5)),
+        "REQUIRE_APPROVAL": int(os.environ.get("REQUIRE_APPROVAL", 0)),
+        "PAIR_MODE": os.environ.get("PAIR_MODE", "pair"),
+        "SINGLE_TYPE": int(os.environ.get("SINGLE_TYPE", 11)),
     }
     
     # 1. Local file (overwrites Env Vars)
@@ -68,23 +72,45 @@ def load_roblox_config(path="config.txt"):
 
     # 2. Cloud Settings (Overwrites EVERYTHING except if cloud value is 0 for critical IDs)
     cloud_settings = db_manager.load_settings()
-    for k in ["GROUP_ID", "PRICE", "DELAY_MIN", "DELAY_MAX", "TARGET_PAIRS"]:
+    for k in ["GROUP_ID", "PRICE", "DELAY_MIN", "DELAY_MAX", "TARGET_PAIRS", "REQUIRE_APPROVAL"]:
         if k in cloud_settings:
             try:
-                val = int(cloud_settings[k])
-                # If cloud has a '0' for GROUP_ID but local has a real ID, keep the local one.
-                if k == "GROUP_ID" and val == 0 and cfg[k] != 0:
-                    continue
-                cfg[k] = val
+                if k == "REQUIRE_APPROVAL":
+                    cfg[k] = int(cloud_settings[k])
+                else:
+                    val = int(cloud_settings[k])
+                    # If cloud has a '0' for GROUP_ID but local has a real ID, keep the local one.
+                    if k == "GROUP_ID" and val == 0 and cfg[k] != 0:
+                        continue
+                    cfg[k] = val
             except ValueError:
                 pass
-                
+    # PAIR_MODE from cloud (string)
+    if "PAIR_MODE" in cloud_settings:
+        val = cloud_settings["PAIR_MODE"]
+        if val in ["pair", "single"]:
+            cfg["PAIR_MODE"] = val
+    if "SINGLE_TYPE" in cloud_settings:
+        try:
+            cfg["SINGLE_TYPE"] = int(cloud_settings["SINGLE_TYPE"])
+        except ValueError:
+            pass
+            
+    global TARGET_PAIRS
+    if "TARGET_PAIRS" in cfg:
+        TARGET_PAIRS = cfg["TARGET_PAIRS"]
+        
     return cfg
 
 def save_roblox_config(cfg, path="config.txt"):
     for k, v in cfg.items():
-        if k in ["GROUP_ID", "PRICE", "DELAY_MIN", "DELAY_MAX", "TARGET_PAIRS", "SORT_TYPE", "SORT_AGG"]:
+        if k in ["GROUP_ID", "PRICE", "DELAY_MIN", "DELAY_MAX", "TARGET_PAIRS", "SORT_TYPE", "SORT_AGG", "REQUIRE_APPROVAL"]:
             db_manager.save_setting(k, v)
+    # PAIR_MODE'u da kaydet (string)
+    if "PAIR_MODE" in cfg:
+        db_manager.save_setting("PAIR_MODE", cfg["PAIR_MODE"])
+    if "SINGLE_TYPE" in cfg:
+        db_manager.save_setting("SINGLE_TYPE", cfg["SINGLE_TYPE"])
 
     with open(path, "w") as f:
         f.write(
@@ -95,6 +121,9 @@ def save_roblox_config(cfg, path="config.txt"):
             f"TARGET_PAIRS={cfg['TARGET_PAIRS']}\n"
             f"SORT_TYPE={cfg['SORT_TYPE']}\n"
             f"SORT_AGG={cfg['SORT_AGG']}\n"
+            f"REQUIRE_APPROVAL={cfg['REQUIRE_APPROVAL']}\n"
+            f"PAIR_MODE={cfg['PAIR_MODE']}\n"
+            f"SINGLE_TYPE={cfg['SINGLE_TYPE']}\n"
         )
 
 def load_cookie(path="cookie.txt"):
@@ -137,8 +166,17 @@ WAITING_PAIRS    = 4
 # ─── Job state ────────────────────────────────────────────────────────────────
 _job_stop  = threading.Event()
 _job_info  = {"status": "idle", "keywords": [], "pairs_done": 0, "uploads": 0}
+# Global Ayarlar
+TARGET_PAIRS = 5  # Varsayılan
+
 _initial_cfg = load_roblox_config()
-TARGET_PAIRS = _initial_cfg.get("TARGET_PAIRS", 5)
+# load_roblox_config içinde TARGET_PAIRS güncelleniyor
+
+# Onay sistemi için global değişkenler
+_pending_events = {}   # unique_id -> asyncio.Event
+_pending_status = {}   # unique_id -> "approve" | "reject" | "skip"
+_pending_items = {}    # unique_id -> item data (dict)
+_pending_lock = threading.Lock()  # thread-safe erişim için
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 def is_allowed(update: Update) -> bool:
@@ -166,25 +204,40 @@ def settings_keyboard():
     price   = cfg["PRICE"]
     group   = cfg["GROUP_ID"] if cfg["GROUP_ID"] else "Ayarlanmadı"
     cookie_str = "Ayarlı ✅" if load_cookie() else "Yok ❌"
+    approval_str = "Açık ✅" if cfg.get("REQUIRE_APPROVAL", 0) == 1 else "Kapalı ❌"
+    pair_mode = cfg.get("PAIR_MODE", "pair")
+    mode_str = "Çift Mod" if pair_mode == "pair" else "Tekli Mod"
+    target_label = "Hedef Çift" if pair_mode == "pair" else "Hedef Item"
     sort_label_map = {
         (2, 5): "En Çok Satan (Tüm Zamanlar)",
         (2, 3): "En Çok Satan (Son Hafta)",
         (2, 1): "En Çok Satan (Son Gün)",
         (1, 5): "En Çok Favorilenen",
-        (4, 5): "Fiyat: Düşük → Yüksek",
-        (5, 5): "Fiyat: Yüksek → Düşük",
+        (4, 5): "Fiyat: Düşük ➡ Yüksek",
+        (5, 5): "Fiyat: Yüksek ➡ Düşük",
+        (0, 5): "En Alakalı (By Relevance)"
     }
     sort_key = (cfg.get("SORT_TYPE", 2), cfg.get("SORT_AGG", 5))
     sort_label = sort_label_map.get(sort_key, "En Çok Satan (Tüm Zamanlar)")
-
-    return InlineKeyboardMarkup([
+    
+    kb = [
         [InlineKeyboardButton(f"💰  Fiyat: {price} Robux",   callback_data="set_price")],
         [InlineKeyboardButton(f"🏷  Grup ID: {group}",       callback_data="set_group")],
-        [InlineKeyboardButton(f"🎯  Hedef Çift: {TARGET_PAIRS}", callback_data="set_pairs")],
+        [InlineKeyboardButton(f"🎯  {target_label}: {TARGET_PAIRS}", callback_data="set_pairs")],
         [InlineKeyboardButton(f"🔑  Cookie: {cookie_str}",       callback_data="set_cookie")],
-        [InlineKeyboardButton(f"🧭  Sıralama: {sort_label}",      callback_data="set_sort")],
-        [InlineKeyboardButton("⬅️  Ana Menü",                 callback_data="main")],
-    ])
+        [InlineKeyboardButton(f"🔐  Onay Gerekli: {approval_str}", callback_data="toggle_approval")],
+        [InlineKeyboardButton(f"👕  Mod: {mode_str}",           callback_data="set_pair_mode")],
+    ]
+    
+    if pair_mode == "single":
+        single_type = cfg.get("SINGLE_TYPE", 11)
+        type_str = "Shirt" if single_type == 11 else "Pants"
+        kb.append([InlineKeyboardButton(f"👔  Tekli Tip: {type_str}", callback_data="toggle_single_type")])
+        
+    kb.append([InlineKeyboardButton(f"🧭  Sıralama: {sort_label}",      callback_data="set_sort")])
+    kb.append([InlineKeyboardButton("⬅️  Ana Menü",                 callback_data="main")])
+
+    return InlineKeyboardMarkup(kb)
 
 def back_keyboard():
     return InlineKeyboardMarkup([
@@ -226,8 +279,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return await deny(update)
     q    = update.callback_query
     data = q.data
+    cfg  = load_roblox_config()
     
-    # Wrap answer in try-except to avoid "Query too old" errors after restarts
     try:
         await q.answer()
     except Exception:
@@ -272,27 +325,37 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         await q.edit_message_text("⏳ *Satış verileri çekiliyor...*", parse_mode="Markdown")
         monitor = GroupFinanceMonitor(cookie, gid)
-        # Fetching takes a second, do it safely
         summary = await asyncio.to_thread(monitor.get_summary)
         
-        if "error" in summary:
-            await q.edit_message_text(f"❌ *Hata:* `{summary['error']}`", reply_markup=back_keyboard(), parse_mode="Markdown")
+        pending = summary.get("pending", 0)
+        sales   = summary.get("item_sales_robux", 0)
+        balance = summary.get("user_balance", 0)
+        u_name  = summary.get("user_name", "Bilinmeyen")
+        g_err   = summary.get("group_error")
+
+        # Grup satışları metni
+        if g_err:
+            group_text = f"⚠️ *Grup Satışları:* `{g_err}`"
         else:
-            pending = summary.get("pending", 0)
-            sales   = summary.get("item_sales_robux", 0)
-            text = (
-                f"📈 *Grup Finans Özeti*\n\n"
+            group_text = (
                 f"💸 Bekleyen Robux: `{pending} R$`\n"
-                f"🛍️ Bugün Satışlardan Gelen: `{sales} R$`\n\n"
-                f"_Anlık satış bildirimleri arkaplanda aktiftir._"
+                f"🛍️ Bugün Satışlardan Gelen: `{sales} R$`"
             )
-            await q.edit_message_text(text, reply_markup=back_keyboard(), parse_mode="Markdown")
+
+        text = (
+            f"📈 *Finans Özeti*\n\n"
+            f"👤 Kullanıcı: `{u_name}`\n"
+            f"💰 *Hesap Bakiyesi:* `{balance} R$`\n\n"
+            f"{group_text}\n\n"
+            f"_Anlık satış bildirimleri arkaplanda aktiftir._"
+        )
+        await q.edit_message_text(text, reply_markup=back_keyboard(), parse_mode="Markdown")
 
     # ── Ayarlar ──
     elif data == "settings":
         await q.edit_message_text("⚙️ *Ayarlar*\nDeğiştirmek istediğin ayara tıkla:", reply_markup=settings_keyboard(), parse_mode="Markdown")
 
-    # ── Ayar seçenekleri (conversation başlatıcı değil, direkt bilgi ver) ──
+    # ── Ayar seçenekleri ──
     elif data == "set_price":
         ctx.user_data["awaiting"] = "price"
         await q.edit_message_text(
@@ -310,8 +373,11 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif data == "set_pairs":
         ctx.user_data["awaiting"] = "pairs"
+        cfg = load_roblox_config()
+        pair_mode = cfg.get("PAIR_MODE", "pair")
+        target_label = "çift" if pair_mode == "pair" else "item"
         await q.edit_message_text(
-            f"🎯 *Hedef Çift Sayısı*\n\nŞu an: `{TARGET_PAIRS}`\n\nHer keyword için kaç çift (shirt+pants) indirilsin? (1–30):",
+            f"🎯 *Hedef {target_label.title()} Sayısı*\n\nŞu an: `{TARGET_PAIRS}`\n\nHer keyword için kaç {target_label} indirilsin? (1–30):",
             reply_markup=back_keyboard(), parse_mode="Markdown"
         )
 
@@ -332,12 +398,92 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "3️⃣ En Çok Satan (Son Gün)\n"
             "4️⃣ En Çok Favorilenen (Tüm Zamanlar)\n"
             "5️⃣ Fiyat: Düşük → Yüksek\n"
-            "6️⃣ Fiyat: Yüksek → Düşük\n\n"
+            "6️⃣ Fiyat: Yüksek → Düşük\n"
+            "7️⃣ En Alakalı (By Relevance)\n\n"
             "Seçtiğin numarayı yaz (örn: `1`).",
             reply_markup=back_keyboard(),
             parse_mode="Markdown"
         )
         ctx.user_data["awaiting"] = "sort"
+
+    elif data == "toggle_single_type":
+        cfg = load_roblox_config()
+        current = cfg.get("SINGLE_TYPE", 11)
+        new_type = 12 if current == 11 else 11
+        cfg["SINGLE_TYPE"] = new_type
+        save_roblox_config(cfg)
+        
+        # UI'yı hemen güncellemek için settings_keyboard'u tekrar gönderiyoruz
+        type_str = "Pants (Alt)" if new_type == 12 else "Shirt (Üst)"
+        await q.answer(f"Mod Değişti: {type_str}")
+        await q.edit_message_reply_markup(reply_markup=settings_keyboard())
+
+    elif data == "toggle_approval":
+        cfg = load_roblox_config()
+        current = cfg.get("REQUIRE_APPROVAL", 0)
+        new_val = 0 if current == 1 else 1
+        cfg["REQUIRE_APPROVAL"] = new_val
+        save_roblox_config(cfg)
+        status = "AÇIK ✅" if new_val == 1 else "KAPALI ❌"
+        await q.edit_message_text(
+            f"🔐 *Onay Zorunluluğu*\n\n"
+            f"Durum: **{status}**\n\n"
+            f"{'✅ Onay aktif: Bot bulduğu kıyafetleri önce gösterip onay isteyecek.' if new_val == 1 else '❌ Onay kapalı: Bulunan kıyafetler otomatik yüklenecek.'}\n\n"
+            f"Ayarlar kaydedildi. Ana menüye dönüyorsunuz…",
+            reply_markup=settings_keyboard(),
+            parse_mode="Markdown"
+        )
+
+    elif data == "set_pair_mode":
+        cfg = load_roblox_config()
+        current = cfg.get("PAIR_MODE", "pair")
+        modes = ["pair", "single"]
+        next_idx = (modes.index(current) + 1) % len(modes)
+        new_mode = modes[next_idx]
+        cfg["PAIR_MODE"] = new_mode
+        save_roblox_config(cfg)
+        mode_desc = "Çift Mod (Shirt+Pants)" if new_mode == "pair" else "Tekli Mod (Sadece Shirt)"
+        await q.edit_message_text(
+            f"👕 *Yükleme Modu*\n\n"
+            f"Yeni mod: **{mode_desc}**\n\n"
+            f"• *Çift Mod:* Shirt bulduktan sonra eşleşen pants'ı arar ve ikisini birlikte yükler.\n"
+            f"• *Tekli Mod:* Sadece shirt'leri bulur ve tek tek yükler.\n\n"
+            f"Ayarlar kaydedildi. Ana menüye dönüyorsunuz…",
+            reply_markup=settings_keyboard(),
+            parse_mode="Markdown"
+        )
+
+    # ── Onay callbacks ──
+    elif data.startswith("approve_") or data.startswith("reject_") or data.startswith("skip_") or data.startswith("stop_job_"):
+        parts = data.split("_", 1)
+        action = parts[0]
+        if action == "stop" and "job" in parts[1]: # handle stop_job_XXX
+            action = "stop"
+            unique_id = parts[1].replace("job_", "")
+        else:
+            unique_id = parts[1]
+        
+        if unique_id in _pending_events:
+            event = _pending_events[unique_id]
+            with _pending_lock:
+                _pending_status[unique_id] = action
+            
+            event.set()
+            
+            if action == "approve":
+                conf_msg = "✅ *Onaylandı:* Yükleniyor..."
+            elif action == "stop":
+                conf_msg = "🛑 *Durduruldu:* İşlem sonlandırılıyor."
+            else:
+                conf_msg = "🔍 *Atlandı:* Sıradaki aranıyor..."
+
+            try:
+                if q.message.caption:
+                    await q.edit_message_caption(conf_msg, parse_mode="Markdown")
+                else:
+                    await q.edit_message_text(conf_msg, parse_mode="Markdown")
+            except Exception as e:
+                Logger.error(f"Callback düzenleme hatası: {e}")
 
     # ── İş Başlat ──
     elif data == "run":
@@ -378,11 +524,14 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif data == "help_settings":
         cfg = load_roblox_config()
+        pair_mode = cfg.get("PAIR_MODE", "pair")
+        target_label = "çift" if pair_mode == "pair" else "item"
+        target_desc = "shirt+pants çift" if pair_mode == "pair" else "shirt item"
         await q.edit_message_text(
             "⚙️ *Ayarlar Hakkında*\n\n"
             f"💰 *Fiyat* (`{cfg['PRICE']}` Robux) — Kıyafetlerin satış fiyatı\n\n"
             f"🏷 *Grup ID* (`{cfg['GROUP_ID'] or 'Ayarlanmadı'}`) — Kıyafetlerin yükleneceği Roblox grubu\n\n"
-            f"🎯 *Hedef Çift* (`{TARGET_PAIRS}`) — Her keyword için kaç çift shirt+pants indirilsin\n\n"
+            f"🎯 *Hedef {target_label.title()}* (`{TARGET_PAIRS}`) — Her keyword için kaç {target_desc} indirilsin\n\n"
             f"⏰ *Gecikme* `{cfg['DELAY_MIN']}`–`{cfg['DELAY_MAX']}` sn — Yüklemeler arası bekleme süresi _(anti-ban için)_\n\n"
             "Ayarları değiştirmek için *Ayarlar* menüsüne git.",
             reply_markup=help_keyboard(), parse_mode="Markdown"
@@ -419,11 +568,12 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=help_keyboard(), parse_mode="Markdown"
         )
 
-# ─── Metin mesajı handler (ayar input / keyword input) ───────────────────────
+# ─── Metin mesajı handler ────────────────────────────────────────────────────
 async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return await deny(update)
     awaiting = ctx.user_data.get("awaiting")
     text     = update.message.text.strip()
+    cfg      = load_roblox_config()
 
     if awaiting == "keyword":
         ctx.user_data["awaiting"] = None
@@ -471,7 +621,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cfg = load_roblox_config()
         cfg["TARGET_PAIRS"] = n
         save_roblox_config(cfg)
-        print(f"[Firebase] Saved TARGET_PAIRS={n}")
+        Logger.success(f"Hedef sayısı Firebase'e kaydedildi: {n}")
         await update.message.reply_text(f"✅ Her keyword için `{TARGET_PAIRS}` çift indirilecek.\n(Ayarlar Firebase'e kaydedildi: {n})", reply_markup=settings_keyboard(), parse_mode="Markdown")
 
     elif awaiting == "cookie":
@@ -496,9 +646,10 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "4": (1, 5),  # Most Favorited, All Time
             "5": (4, 5),  # Price Asc
             "6": (5, 5),  # Price Desc
+            "7": (0, 5),  # Relevance
         }
         if choice not in sort_map:
-            await update.message.reply_text("❌ Geçersiz seçim. 1–6 arasında bir numara yaz.", reply_markup=settings_keyboard(), parse_mode="Markdown")
+            await update.message.reply_text("❌ Geçersiz seçim. 1–7 arasında bir numara yaz.", reply_markup=settings_keyboard(), parse_mode="Markdown")
             return
 
         sort_type, sort_agg = sort_map[choice]
@@ -510,91 +661,38 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Sıralama tercihin kaydedildi. Bir sonraki aramada bu sıraya göre aranacak.", reply_markup=settings_keyboard(), parse_mode="Markdown")
 
     else:
-        # Tanımsız mesaj → Ana menüyü göster
         await update.message.reply_text("Ana menü:", reply_markup=main_menu_keyboard())
 
 # ─── Job launcher ─────────────────────────────────────────────────────────────
 async def start_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE, keyword_list: list):
+    global _active_task
     cfg    = load_roblox_config()
     cookie = load_cookie()
-    loop   = asyncio.get_event_loop()
 
-    # Tek bir "durum" mesajı üzerinden ilerlemeyi gösterebilmek için
-    status_msg = await update.message.reply_text(
+    await update.message.reply_text(
         f"🚀 *İş Başladı!*\n\n"
         f"🔍 Keyword(ler): `{'`, `'.join(keyword_list)}`\n"
-        f"🎯 Hedef çift: `{TARGET_PAIRS}` / keyword\n\n"
+        f"🎯 Hedef {'çift' if cfg['PAIR_MODE'] == 'pair' else 'item'}: `{TARGET_PAIRS}` / keyword\n\n"
         f"⚙️ Hazırlanıyor, lütfen bekle…",
         reply_markup=main_menu_keyboard(),
         parse_mode="Markdown"
     )
 
-    # Geçici görsel önizleme: output dosyalarını Telegram'a atıp 30 sn sonra sil
-    async def send_preview(path: str, caption: str):
-        try:
-            with open(path, "rb") as f:
-                msg = await update.message.reply_document(
-                    document=f,
-                    caption=caption,
-                    parse_mode="Markdown",
-                )
-        except Exception as e:
-            # Önizleme hatası durumunda sessizce devam et
-            print(f"Preview send error for {path}: {e}")
-            return
-
-        # 30 saniye sonra mesajı sil
-        try:
-            await asyncio.sleep(30)
-            await msg.delete()
-        except Exception as e:
-            print(f"Preview delete error for {path}: {e}")
-
-    async def send_fn(msg: str, *, reply_markup=None, force_new: bool = False):
-        nonlocal status_msg
-        # Varsayılan: mevcut durum mesajını güncelle
-        try:
-            if not status_msg or force_new:
-                status_msg = await update.message.reply_text(
-                    msg,
-                    reply_markup=reply_markup or main_menu_keyboard(),
-                    parse_mode="Markdown"
-                )
-            else:
-                await status_msg.edit_text(
-                    msg,
-                    reply_markup=reply_markup or status_msg.reply_markup or main_menu_keyboard(),
-                    parse_mode="Markdown"
-                )
-        except Exception:
-            # Herhangi bir edit hatasında yedek olarak yeni mesaj gönder
-            status_msg = await update.message.reply_text(
-                msg,
-                reply_markup=reply_markup or main_menu_keyboard(),
-                parse_mode="Markdown"
-            )
-
     _job_stop.clear()
-    t = threading.Thread(
-        target=_job_thread_fn,
-        args=(keyword_list, cfg, cookie, send_fn, send_preview, loop, TARGET_PAIRS),
-        daemon=True,
-    )
-    t.start()
+    _active_task = asyncio.create_task(job_task(update, ctx, keyword_list, cfg, cookie))
 
-# ─── Background job ──────────────────────────────────────────────────────────
-def _job_thread_fn(keyword_list, cfg, cookie, send_fn, preview_fn, loop, target_pairs):
-    def send(msg, **kwargs):
-        asyncio.run_coroutine_threadsafe(send_fn(msg, **kwargs), loop)
-
-    def preview(path: str, caption: str):
-        asyncio.run_coroutine_threadsafe(preview_fn(path, caption), loop)
+# ─── Background job (Async Task) ──────────────────────────────────────────────
+async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_list, cfg, cookie):
+    async def send(msg, **kwargs):
+        try:
+            return await update.message.reply_text(msg, parse_mode="Markdown", **kwargs)
+        except Exception as e:
+            Logger.error(f"Mesaj gönderme hatası: {e}")
 
     try:
         global _job_info
         _job_info.update({"status": "running", "keywords": keyword_list, "pairs_done": 0, "uploads": 0})
 
-        # Sıralama ayarlarını config'ten çek
         sort_type = cfg.get("SORT_TYPE", 2)
         sort_agg  = cfg.get("SORT_AGG", 5)
 
@@ -612,182 +710,218 @@ def _job_thread_fn(keyword_list, cfg, cookie, send_fn, preview_fn, loop, target_
             )
         else:
             if not group_id:
-                send("⚠️ Grup ID ayarlanmadı — sadece indirme yapılacak.\n_Ayarlamak için: ⚙️ Ayarlar → Grup ID_")
+                await send("⚠️ Grup ID ayarlanmadı — sadece indirme yapılacak.\n_Ayarlamak için: ⚙️ Ayarlar → Grup ID_")
 
         upload_count = 0
+        require_approval = cfg.get("REQUIRE_APPROVAL", 0) == 1
+        pair_mode = cfg.get("PAIR_MODE", "pair")
+        target_pairs = cfg.get("TARGET_PAIRS", 5)
 
         for keyword in keyword_list:
-            if _job_stop.is_set():
-                break
-
-            send(
+            if _job_stop.is_set(): break
+            await send(
                 f"🔍 *{keyword.title()}* için arama başlatıldı…\n\n"
-                f"• 👕 Uygun shirt/pants çiftleri aranıyor\n"
-                f"• 🎯 Hedef çift sayısı: `{target_pairs}`\n\n"
-                f"⏳ İlk sonuçlar bulununca burada göreceksin."
+                f"• 🎯 Hedef {'çift' if pair_mode == 'pair' else 'item'} sayısı: `{target_pairs}`\n"
+                f"⏳ Sonuçlar bekleniyor..."
             )
-            pairs_found = 0
+            items_found = 0
 
-            async def process_keyword():
-                nonlocal pairs_found, upload_count
-
-                # Step 1: Pre-fetch a pool of pants for creator-matching fallback
+            if pair_mode == "pair":
                 pants_pool = await roblox.search_and_get_assets(keyword, count=40, asset_type=12)
                 used_pants_ids = set()
 
-                def match_pair_fast(s_name, s_creator, pool):
-                    """Matches by creator and name similarity (FAST)"""
+                async for asset_id, item_url, creator, current_item_name in roblox.search_and_yield_assets(keyword):
+                    if _job_stop.is_set() or items_found >= target_pairs: break
+                    
                     import re
-                    s_clean = re.sub(r'shirt', '', s_name, flags=re.IGNORECASE).strip().lower()
-                    for p_id, p_url, p_creator, p_name in pool:
+                    s_clean = re.sub(r'shirt', '', current_item_name, flags=re.IGNORECASE).strip().lower()
+                    pants_id = None
+                    for p_id, p_url, p_creator, p_name in (pants_pool or []):
                         p_clean = re.sub(r'pants|pant', '', p_name, flags=re.IGNORECASE).strip().lower()
-                        # If same creator and names are very similar, it's a match
-                        if s_creator == p_creator and (s_clean in p_clean or p_clean in s_clean):
-                            return p_id
-                    return None
+                        if creator == p_creator and (s_clean in p_clean or p_clean in s_clean):
+                            pants_id = p_id; break
+                    
+                    if not pants_id:
+                        try:
+                            paired_pants = await roblox.get_paired_pants(asset_id, keyword)
+                            if paired_pants:
+                                pants_id, _ = paired_pants[0]
+                        except Exception: pass
+                    
+                    if not pants_id or pants_id in used_pants_ids: continue
+                    used_pants_ids.add(pants_id)
+                    
+                    # ── Duplicate Check ──
+                    is_duplicate = db_manager.is_item_uploaded(asset_id) or db_manager.is_item_uploaded(pants_id)
+                    if is_duplicate:
+                        Logger.warn(f"Bu çift ({asset_id}/{pants_id}) daha önce yüklendi! Kullanıcıya sorulacak.")
 
-                search_gen = roblox.search_and_yield_assets(keyword)
-                try:
-                    async for asset_id, item_url, creator, current_item_name in search_gen:
-                        if _job_stop.is_set() or pairs_found >= target_pairs:
-                            break
+                    items_found += 1
+                    _job_info["pairs_done"] = items_found
+                    await send(f"✅ *{keyword.title()}* için {items_found}. çift bulundu!")
 
-                        # Step 2A: Try Fast Name Matching (No API call)
-                        pants_id = match_pair_fast(current_item_name, creator, pants_pool)
+                    shirt_path = await download_and_design(asset_id, keyword, "shirt", downloader, designer)
+                    pants_path = await download_and_design(pants_id, keyword, "pants", downloader, designer)
+                    if not shirt_path or not pants_path: continue
+
+                    shirt_name, shirt_desc = generate_metadata(keyword, "shirt")
+                    pants_name, pants_desc = generate_metadata(keyword, "pants")
+                    
+                    do_upload = True
+                    if require_approval:
+                        unique_id = f"{asset_id}_pair"
+                        event = asyncio.Event()
+                        with _pending_lock:
+                            _pending_events[unique_id] = event
+                            _pending_items[unique_id] = {"shirt_path": shirt_path, "pants_path": pants_path, "shirt_id": asset_id, "pants_id": pants_id}
                         
-                        if pants_id:
-                            print(f"[Match] Found via name similarity: {current_item_name} <-> {pants_id}")
-                        else:
-                            # Step 2B: Fallback to Direct link in description (Slow API call)
-                            try:
-                                paired_pants = await roblox.get_paired_pants(asset_id, keyword)
-                                if paired_pants:
-                                    pants_id, _ = paired_pants[0]
-                                    print(f"[Match] Found via direct link: {asset_id} <-> {pants_id}")
-                            except Exception:
-                                pass
+                        # Çift modda iki resmi bir grup olarak gönderip altına onay mesajı atıyoruz
+                        from telegram import InputMediaPhoto
+                        try:
+                            # We open files synchronously but send asynchronously
+                            with open(shirt_path, "rb") as s_img, open(pants_path, "rb") as p_img:
+                                await update.message.reply_media_group([
+                                    InputMediaPhoto(s_img, caption=f"👕 *Shirt:* {shirt_name}"),
+                                    InputMediaPhoto(p_img, caption=f"👖 *Pants:* {pants_name}")
+                                ])
+                        except Exception as e:
+                            Logger.error(f"Önizleme (Media Group) hatası: {e}")
 
-                        if not pants_id:
-                            # Eğer açıklamada doğrudan link yoksa bu shirt'i tamamen atla,
-                            # böylece rastgele/uyuşmayan pantolonlarla eşleşme yapılmaz.
-                            print(f"[Match] Skipping shirt {asset_id} — no explicit paired pants link found.")
-                            continue
-
-                        used_pants_ids.add(pants_id)
-
-                        pairs_found += 1
-                        _job_info["pairs_done"] = pairs_found
-
-                        send(
-                            f"✅ *{keyword.title()}* için çift bulundu!\n\n"
-                            f"• 🔢 Çift sayısı: `{pairs_found}/{target_pairs}`\n"
-                            f"• 👕 Shirt ID: `{asset_id}`\n"
-                            f"• 👖 Pants ID: `{pants_id}`\n\n"
-                            f"🎨 Tasarım uygulanıyor…"
+                        dup_warn = "⚠️ *DİKKAT: Bu çift daha önce yüklendi!*\n\n" if is_duplicate else ""
+                        await send(
+                            f"{dup_warn}⏳ *Yukarıdaki {items_found}. Çift İçin Onay Bekleniyor*\n\n"
+                            f"👕 S: `{shirt_name}`\n"
+                            f"👖 P: `{pants_name}`\n\n"
+                            f"📜 *Shirt Açıklama:*\n`{shirt_desc}`\n\n"
+                            f"📜 *Pants Açıklama:*\n`{pants_desc}`\n\n"
+                            f"Yüklensin mi?",
+                            reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}")],
+                                [InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}"),
+                                 InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}")],
+                                [InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
+                            ])
                         )
-
-                        shirt_label = f"{keyword.replace(' ', '_')}_shirt{pairs_found}"
-                        shirt_out = await download_and_design(
-                            asset_id, keyword, "shirt", downloader, designer, custom_label=shirt_label
-                        )
-                        if not shirt_out:
-                            send(f"❌ Shirt indirme başarısiz: `{asset_id}`")
-                            continue
-
-                        pants_label = f"{keyword.replace(' ', '_')}_pants{pairs_found}"
-                        pants_out = await download_and_design(
-                            pants_id, keyword, "pants", downloader, designer, custom_label=pants_label
-                        )
-                        if not pants_out:
-                            send(f"❌ Pants indirme başarısız: `{pants_id}`")
-                            continue
-
-                        # Satışa koyarken kullanılacak başlık ve açıklama; önizlemede link yok, placeholder göster
-                        shirt_name, shirt_desc = generate_metadata(keyword, "shirt", pair_url="Buraya link gelecek")
-                        pants_name, pants_desc = generate_metadata(keyword, "pants", pair_url="Buraya link gelecek")
-                        def _trunc(s: str, max_len: int = 480) -> str:
-                            s = (s or "").strip().replace("`", "'")
-                            return (s[:max_len] + "…") if len(s) > max_len else s
-                        # Test amaçlı: fotoğraf + satış başlığı/açıklaması, 30 sn sonra silinecek
-                        cap_shirt = (
-                            f"👕 *Shirt* (Çift {pairs_found})\n\n"
-                            f"*Satış başlığı:*\n`{shirt_name}`\n\n"
-                            f"*Satış açıklaması:*\n`{_trunc(shirt_desc)}`"
-                        )
-                        cap_pants = (
-                            f"👖 *Pants* (Çift {pairs_found})\n\n"
-                            f"*Satış başlığı:*\n`{pants_name}`\n\n"
-                            f"*Satış açıklaması:*\n`{_trunc(pants_desc)}`"
-                        )
-                        preview(shirt_out, cap_shirt)
-                        preview(pants_out, cap_pants)
-
-                        send(
-                            f"🎨 Tasarım tamamlandı!\n\n"
-                            f"• 👕 Shirt ID: `{asset_id}`\n"
-                            f"• 👖 Pants ID: `{pants_id}`\n\n"
-                            f"☁️ Şimdi gruba yükleniyor…"
-                        )
-
-                        if uploader:
-                            send("☁️ Yükleniyor… _(Anti-ban bekleme başlıyor)_")
-                            upload_count = await upload_pair_with_crosslink(
-                                asset_id, shirt_out, pants_id, pants_out,
-                                keyword, uploader, upload_count, cfg
-                            )
-                            _job_info["uploads"] = upload_count
+                        
+                        try:
+                            await asyncio.wait_for(event.wait(), timeout=360)
+                            with _pending_lock:
+                                status = _pending_status.pop(unique_id, "skip")
+                                _pending_events.pop(unique_id, None)
+                                item_data = _pending_items.pop(unique_id, None)
                             
-                            # Only say "searching" if we haven't reached the target yet
-                            if pairs_found < target_pairs:
-                                send(
-                                    f"🔗 Yükleme tamamlandı ve açıklamalar çapraz linklendi!\n\n"
-                                    f"• 📦 Bu oturumda yüklenen toplam item: `{upload_count}`\n"
-                                    f"• 🔢 İşlenen çift: `{pairs_found}/{target_pairs}`\n\n"
-                                    f"🔍 Yeni çiftler aranıyor…"
+                            if status == "approve" and item_data:
+                                do_upload = True
+                            elif status == "stop":
+                                _job_stop.set(); do_upload = False; break
+                            elif status == "skip":
+                                items_found -= 1; do_upload = False; continue # Slotu boş bırakma, yenisini bul
+                            else: # status == "reject"
+                                do_upload = False; continue # Slotu boş say, sıradakine geç (items_found zaten artmıştı)
+                        except asyncio.TimeoutError:
+                            items_found -= 1; do_upload = False; continue
+
+                    if do_upload and uploader:
+                        await send("☁️ Yükleniyor…")
+                        upload_count = await upload_pair_with_crosslink(asset_id, shirt_path, pants_id, pants_path, keyword, uploader, upload_count, cfg)
+                        _job_info["uploads"] = upload_count
+
+            else: # single mode
+                single_type = cfg.get("SINGLE_TYPE", 11)
+                type_name = "shirt" if single_type == 11 else "pants"
+                async for asset_id, item_url, creator, current_item_name in roblox.search_and_yield_assets(keyword, asset_type=single_type):
+                    if _job_stop.is_set() or items_found >= target_pairs: break
+                    
+                    # ── Duplicate Check ──
+                    is_duplicate = db_manager.is_item_uploaded(asset_id)
+                    if is_duplicate:
+                        Logger.warn(f"Bu item ({asset_id}) daha önce yüklendi! Kullanıcıya sorulacak.")
+
+                    items_found += 1
+                    _job_info["pairs_done"] = items_found
+                    
+                    await send(f"✅ *{keyword.title()}* için {items_found}. {type_name} bulundu!")
+                    out_path = await download_and_design(asset_id, keyword, type_name, downloader, designer)
+                    if not out_path: continue
+
+                    name, desc = generate_metadata(keyword, type_name, use_suffix=False)
+                    
+                    do_upload = True
+                    if require_approval:
+                        unique_id = f"{asset_id}_{single_type}"
+                        event = asyncio.Event()
+                        with _pending_lock:
+                            _pending_events[unique_id] = event
+                            _pending_items[unique_id] = {"asset_path": out_path, "asset_id": asset_id}
+
+                        # Single modda resmin altına butonları koyabiliyoruz
+                        try:
+                            dup_warn = "⚠️ *DİKKAT: Bu ürün daha önce yüklendi!*\n\n" if is_duplicate else ""
+                            with open(out_path, "rb") as f:
+                                await update.message.reply_photo(
+                                    photo=f,
+                                    caption=f"{dup_warn}⏳ *İtem {items_found} Onay Bekliyor*\n\n"
+                                            f"👔 Tip: `{type_name.title()}`\n"
+                                            f"📝 Ad: `{name}`\n"
+                                            f"📜 Açıklama: `{desc}`\n\n"
+                                            f"Yüklensin mi?",
+                                    reply_markup=InlineKeyboardMarkup([
+                                        [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}")],
+                                        [InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}"),
+                                         InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}")],
+                                        [InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
+                                    ]),
+                                    parse_mode="Markdown"
                                 )
-                            else:
-                                send(
-                                    f"🔗 Yükleme ve linkleme tamamlandı!\n\n"
-                                    f"• 📦 Toplam yüklenen item: `{upload_count}`\n"
-                                    f"• 🔢 Hedeflenen `{target_pairs}` çift başariyla işlendi."
-                                )
-                finally:
-                    await search_gen.aclose()
+                        except Exception as e:
+                            Logger.error(f"Önizleme (Photo) hatası: {e}")
+                            await send("⚠️ Önizleme gönderilemedi ama onay bekleniyor...", reply_markup=InlineKeyboardMarkup([
+                                        [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}")],
+                                        [InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}"),
+                                         InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}")],
+                                        [InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
+                                    ]))
+                        
+                        try:
+                            await asyncio.wait_for(event.wait(), timeout=360)
+                            with _pending_lock:
+                                status = _pending_status.pop(unique_id, "skip")
+                                _pending_events.pop(unique_id, None)
+                                item_data = _pending_items.pop(unique_id, None)
+                            
+                            if status == "approve" and item_data:
+                                do_upload = True
+                            elif status == "stop":
+                                _job_stop.set(); await send("🛑 *İş sonlandırıldı.*", reply_markup=back_keyboard()); do_upload = False; break
+                            elif status == "skip":
+                                items_found -= 1; do_upload = False; continue # Slotu boş bırakma, yenisini bul
+                            else: # status == "reject"
+                                do_upload = False; continue # Slotu boş say, sıradakine geç
+                        except asyncio.TimeoutError:
+                            items_found -= 1; await send(f"❌ Onay zaman aşımı, atlandı."); do_upload = False; continue
 
-            asyncio.run(process_keyword())
+                    if do_upload and uploader:
+                        await send("☁️ Yükleniyor…")
+                        upload_count = await upload_single_asset(asset_id, out_path, keyword, uploader, upload_count, cfg, item_type=single_type)
+                        _job_info["uploads"] = upload_count
 
-            if pairs_found >= target_pairs:
-                send(f"🏁 `{keyword.title()}` için {target_pairs} çift tamamlandı!")
-            elif pairs_found == 0:
-                send(f"😕 `{keyword.title()}` için eşleşen çift bulunamadı.")
-
+        await send(f"🏁 İş tamamlandı! Toplam yüklenen: `{upload_count}`", reply_markup=back_keyboard())
     except Exception as e:
-        print(f"BÜYÜK HATA (Arkaplan İşi): {e}")
-        send(f"⚠️ *Kritik Bir Hata Oluştu!*\n\nBot işleme durduruldu. Lütfen tekrar başlatmayı dene.\n`Hata: {e}`")
+        Logger.error(f"İŞ SIRASINDA KRİTİK HATA: {e}")
+        await send(f"⚠️ Kritik Hata: {e}")
     finally:
-        _job_stop.clear()
         _job_info["status"] = "idle"
+        _job_stop.clear()
 
-    send(
-        f"✅ *Yükleme Tamamlandı!*\n\n"
-        f"📦 Bu oturumda toplamdaki yüklenen item sayısı: `{upload_count}`\n\n"
-        f"🧭 Yeni bir arama başlatmak veya ayarları değiştirmek için ana menüye dönebilirsin.",
-        reply_markup=back_keyboard()
-    )
-
-# ─── Live Sale Notifier (Background Task) ───────────────────────────────────
+# ─── Live Sale Notifier ───────────────────────────────────────────────────────
 _last_monitor_state = {"gid": 0, "cookie": None, "monitor": None}
 
 async def live_sale_notifier_job(context: ContextTypes.DEFAULT_TYPE):
-    """
-    Sürekli arkaplanda çalışır (PTB JobQueue). Yeni satış olduğunda bota mesaj atar.
-    """
     try:
         cfg = load_roblox_config()
         cookie = load_cookie()
         gid = cfg.get("GROUP_ID", 0)
         
-        # config değişirse monitorü yenile
         if not _last_monitor_state["monitor"] or gid != _last_monitor_state["gid"] or cookie != _last_monitor_state["cookie"]:
             if gid and cookie:
                 _last_monitor_state["monitor"] = GroupFinanceMonitor(cookie, gid)
@@ -795,7 +929,7 @@ async def live_sale_notifier_job(context: ContextTypes.DEFAULT_TYPE):
             _last_monitor_state["cookie"] = cookie
             
         monitor = _last_monitor_state["monitor"]
-        if monitor and ALLOWED_ID:
+        if monitor and ALLOWED_IDS:
             sales = await asyncio.to_thread(monitor.check_new_sales)
             for sale in sales:
                 item_name = sale.get("details", {}).get("name", "Bilinmeyen Ürün")
@@ -808,12 +942,14 @@ async def live_sale_notifier_job(context: ContextTypes.DEFAULT_TYPE):
                     f"👤 Alıcı: `{user}`\n"
                     f"💰 Kazanılan: `+{robux} R$`"
                 )
-                await context.bot.send_message(chat_id=ALLOWED_ID, text=msg, parse_mode="Markdown")
+                # Tüm yetkili kullanıcılara bildirim gönder
+                for user_id in ALLOWED_IDS:
+                    await context.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
                 
     except Exception as e:
-        print(f"Satış takip hatası: {e}")
+        Logger.error(f"Satış takip hatası: {e}")
 
-# ─── Dummy Web Server (For Render Free Tier) ──────────────────────────────────
+# ─── Dummy Web Server ─────────────────────────────────────────────────────────
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 class DummyHandler(BaseHTTPRequestHandler):
@@ -829,33 +965,28 @@ def run_dummy_server():
     server.serve_forever()
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    print(f"⚠️ Bot Hatası: {context.error}")
+    Logger.error(f"Bot Hatası: {context.error}")
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     if not BOT_TOKEN:
-        print("HATA: bot_config.txt içinde BOT_TOKEN bulunamadı!")
+        Logger.error("bot_config.txt içinde BOT_TOKEN eksik!")
         return
         
-    # Start dummy server for hosting platforms
     threading.Thread(target=run_dummy_server, daemon=True).start()
 
     import datetime
     now = datetime.datetime.now().strftime("%H:%M:%S")
-    print("\n" + "="*50)
-    print(f"🚀 ROBLOX BOT BAŞLATILDI [{now}]")
-    print("="*50)
+    Logger.header(f"ROBLOX BOT BAŞLATILDI [{now}]")
     
-    status_fb = "AKTİF ✅" if db_manager.is_active else "DEVRE DIŞI ❌ (Anahtar dosyası eksik)"
-    print(f"🛰 Firebase Bağlantısı: {status_fb}")
+    status_fb = "AKTİF ✅" if db_manager.is_active else "DEVRE DIŞI ❌"
+    Logger.info(f"Firebase Bağlantısı: {status_fb}")
     
     if not db_manager.is_active:
-        print("❗ UYARI: Firebase-key.json bulunamadı. Değişiklikler buluta işlenmeyecek!")
+        Logger.warn("Firebase-key.json bulunamadı! Ayarlar buluta senkronize edilmeyecek.")
     
-    print(f"🤖 Yetkili ID'ler: {ALLOWED_IDS}")
-    print("="*50 + "\n")
+    Logger.info(f"Yetkili ID'ler: {ALLOWED_IDS}")
 
-    # job_queue'yu aktif etmek için builder yeterli, timeout artırıldı
     app = (
         ApplicationBuilder()
         .token(BOT_TOKEN)
@@ -864,31 +995,28 @@ def main():
         .build()
     )
 
-    # 1. Register Handlers IMMEDIATELY
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("debug_sync", cmd_debug_sync))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_error_handler(error_handler)
 
-    # 2. Sync Configuration
-    print("🔄 Ayarlar yükleniyor/senkronize ediliyor...")
+    Logger.info("Ayarlar yükleniyor...")
     current_cfg = load_roblox_config()
-    print(f"✅ Ayarlar hazır (Grup: {current_cfg['GROUP_ID']}, Hedef: {current_cfg['TARGET_PAIRS']})")
+    Logger.success(f"Ayarlar Hazır: Grup {current_cfg['GROUP_ID']} | Hedef {current_cfg['TARGET_PAIRS']} | Mod {current_cfg['PAIR_MODE']}")
     save_roblox_config(current_cfg)
 
-    # 3. Start Background Tasks
     if app.job_queue:
         app.job_queue.run_repeating(live_sale_notifier_job, interval=60, first=10)
 
-    print("✅ Bot hazır! Telegram üzerinden komut bekleniyor...")
+    Logger.header("BOT AKTİF - KOMUT BEKLENİYOR")
     
     try:
         app.run_polling(drop_pending_updates=True)
     except KeyboardInterrupt:
-        print("\n🛑 Bot kullanıcı tarafından durduruldu (Ctrl+C).")
+        Logger.info("Bot durduruldu (Ctrl+C).")
     except Exception as e:
-        print(f"\n❌ Kritik Hata: {e}")
+        Logger.error(f"Kritik Hata: {e}")
     finally:
         print("👋 Kapanıyor...")
 

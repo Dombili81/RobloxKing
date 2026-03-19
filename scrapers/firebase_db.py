@@ -57,6 +57,29 @@ class FirebaseManager:
     def save_cookie(self, cookie: str):
         self.save_setting("ROBLOX_COOKIE", cookie)
 
+    def is_item_uploaded(self, source_id: str) -> bool:
+        """Item daha önce yüklendi mi kontrol et."""
+        if not self.is_active: return False
+        try:
+            # uploaded_items koleksiyonunda bu source_id var mı bak
+            doc = self.db.collection("uploaded_items").document(str(source_id)).get()
+            return doc.exists
+        except Exception as e:
+            print(f"Firebase duplicate check hatası: {e}")
+            return False
+
+    def mark_item_as_uploaded(self, source_id: str, roblox_id: str):
+        """Yüklenen itemi kaydederek tekrarını önleriz."""
+        if not self.is_active: return
+        try:
+            self.db.collection("uploaded_items").document(str(source_id)).set({
+                "original_id": str(source_id),
+                "roblox_id": str(roblox_id),
+                "timestamp": firestore.SERVER_TIMESTAMP
+            })
+        except Exception as e:
+            print(f"Firebase save uploaded hatası: {e}")
+
     def load_settings(self) -> dict:
         """ Tüm ayarları Firebase'den çek """
         if not self.is_active: return {}
