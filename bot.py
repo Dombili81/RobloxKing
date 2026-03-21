@@ -88,7 +88,7 @@ def load_roblox_config(path="config.txt"):
     # PAIR_MODE from cloud (string)
     if "PAIR_MODE" in cloud_settings:
         val = cloud_settings["PAIR_MODE"]
-        if val in ["pair", "single"]:
+        if val in ["pair", "single", "ugc"]:
             cfg["PAIR_MODE"] = val
     if "SINGLE_TYPE" in cloud_settings:
         try:
