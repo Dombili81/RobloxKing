@@ -206,8 +206,15 @@ def settings_keyboard():
     cookie_str = "Ayarlı ✅" if load_cookie() else "Yok ❌"
     approval_str = "Açık ✅" if cfg.get("REQUIRE_APPROVAL", 0) == 1 else "Kapalı ❌"
     pair_mode = cfg.get("PAIR_MODE", "pair")
-    mode_str = "Çift Mod" if pair_mode == "pair" else "Tekli Mod"
-    target_label = "Hedef Çift" if pair_mode == "pair" else "Hedef Item"
+    if pair_mode == "pair":
+        mode_str = "Çift Mod"
+        target_label = "Hedef Çift"
+    elif pair_mode == "single":
+        mode_str = "Tekli Mod"
+        target_label = "Hedef Item"
+    else:
+        mode_str = "3D UGC Mod"
+        target_label = "Hedef 3D Asset"
     sort_label_map = {
         (2, 5): "En Çok Satan (Tüm Zamanlar)",
         (2, 3): "En Çok Satan (Son Hafta)",
@@ -233,6 +240,8 @@ def settings_keyboard():
         single_type = cfg.get("SINGLE_TYPE", 11)
         type_str = "Shirt" if single_type == 11 else "Pants"
         kb.append([InlineKeyboardButton(f"👔  Tekli Tip: {type_str}", callback_data="toggle_single_type")])
+    elif pair_mode == "ugc":
+        kb.append([InlineKeyboardButton(f"📦  3D UGC İndirme Aktif (Upload Yapılmaz)", callback_data="none")])
         
     kb.append([InlineKeyboardButton(f"🧭  Sıralama: {sort_label}",      callback_data="set_sort")])
     kb.append([InlineKeyboardButton("⬅️  Ana Menü",                 callback_data="main")])
@@ -437,17 +446,25 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == "set_pair_mode":
         cfg = load_roblox_config()
         current = cfg.get("PAIR_MODE", "pair")
-        modes = ["pair", "single"]
-        next_idx = (modes.index(current) + 1) % len(modes)
+        modes = ["pair", "single", "ugc"]
+        next_idx = (modes.index(current) + 1) % len(modes) if current in modes else 0
         new_mode = modes[next_idx]
         cfg["PAIR_MODE"] = new_mode
         save_roblox_config(cfg)
-        mode_desc = "Çift Mod (Shirt+Pants)" if new_mode == "pair" else "Tekli Mod (Sadece Shirt)"
+        
+        if new_mode == "pair":
+            mode_desc = "Çift Mod (Shirt+Pants)"
+        elif new_mode == "single":
+            mode_desc = "Tekli Mod (Sadece Shirt/Pants)"
+        else:
+            mode_desc = "3D UGC Mod (3D Asset İndirme)"
+            
         await q.edit_message_text(
             f"👕 *Yükleme Modu*\n\n"
             f"Yeni mod: **{mode_desc}**\n\n"
             f"• *Çift Mod:* Shirt bulduktan sonra eşleşen pants'ı arar ve ikisini birlikte yükler.\n"
-            f"• *Tekli Mod:* Sadece shirt'leri bulur ve tek tek yükler.\n\n"
+            f"• *Tekli Mod:* Sadece seçilen tipteki kıyafetleri bulur ve tek tek yükler.\n"
+            f"• *3D UGC Mod:* Aksesuar 3D modellerini (.obj ve texture) indirip .zip olarak verir. Yükleme YAPMAZ.\n\n"
             f"Ayarlar kaydedildi. Ana menüye dönüyorsunuz…",
             reply_markup=settings_keyboard(),
             parse_mode="Markdown"
@@ -490,13 +507,39 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if _job_info["status"] == "running":
             await q.edit_message_text("⚠️ Zaten bir iş çalışıyor. Önce /stop ile durdur.", reply_markup=back_keyboard(), parse_mode="Markdown")
             return
+            
+        cfg = load_roblox_config()
+        if cfg.get("PAIR_MODE", "pair") == "ugc":
+            kb = [
+                [InlineKeyboardButton("🎩  Hair (Saç)", callback_data="ugc_cat_41"), InlineKeyboardButton("🧢  Hat (Şapka)", callback_data="ugc_cat_8")],
+                [InlineKeyboardButton("😎  Face (Yüz)", callback_data="ugc_cat_42"), InlineKeyboardButton("🧣  Neck (Boyun)", callback_data="ugc_cat_43")],
+                [InlineKeyboardButton("💪  Shoulder (Omuz)", callback_data="ugc_cat_44"), InlineKeyboardButton("👕  Front (Ön)", callback_data="ugc_cat_45")],
+                [InlineKeyboardButton("🎒  Back (Sırt)", callback_data="ugc_cat_46"), InlineKeyboardButton("👖  Waist (Bel)", callback_data="ugc_cat_47")],
+                [InlineKeyboardButton("⬅️  İptal", callback_data="main")]
+            ]
+            await q.edit_message_text("📦 *3D UGC İndirme Aktif*\n\nAramak istediğin aksesuar kategorisini seç:", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+        else:
+            ctx.user_data["awaiting"] = "keyword"
+            await q.edit_message_text(
+                "🚀 *İş Başlat*\n\n"
+                "Aramak istediğin keyword(ler)i yaz:\n\n"
+                "📌 *Tek keyword:* `spiderman`\n"
+                "📌 *Çoklu:* `naruto, batman, goku`\n\n"
+                "Anime, oyun, sporcu… ne olursa yaz:",
+                reply_markup=back_keyboard(), parse_mode="Markdown"
+            )
+
+    elif data.startswith("ugc_cat_"):
+        cat_id = int(data.split("_")[2])
+        ctx.user_data["ugc_category"] = cat_id
         ctx.user_data["awaiting"] = "keyword"
+        
+        cat_names = {8: "Hat (Şapka)", 41: "Hair (Saç)", 42: "Face (Yüz)", 43: "Neck (Boyun)", 44: "Shoulder (Omuz)", 45: "Front (Ön)", 46: "Back (Sırt)", 47: "Waist (Bel)"}
+        c_name = cat_names.get(cat_id, "Bilinmeyen")
+        
         await q.edit_message_text(
-            "🚀 *İş Başlat*\n\n"
-            "Aramak istediğin keyword(ler)i yaz:\n\n"
-            "📌 *Tek keyword:* `spiderman`\n"
-            "📌 *Çoklu:* `naruto, batman, goku`\n\n"
-            "Anime, oyun, sporcu… ne olursa yaz:",
+            f"📦 *Kategori Seçildi:* {c_name}\n\n"
+            "Aramak istediğin keyword(ler)i yaz (Örn: `spiderman` veya `naruto, anime`):",
             reply_markup=back_keyboard(), parse_mode="Markdown"
         )
 
@@ -668,21 +711,26 @@ async def start_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE, keyword_list
     global _active_task
     cfg    = load_roblox_config()
     cookie = load_cookie()
+    
+    ugc_cat = ctx.user_data.get("ugc_category")
 
+    target_label = "çift" if cfg.get('PAIR_MODE', 'pair') == 'pair' else "item"
+    if cfg.get('PAIR_MODE') == 'ugc': target_label = "3D asset"
+    
     await update.message.reply_text(
         f"🚀 *İş Başladı!*\n\n"
         f"🔍 Keyword(ler): `{'`, `'.join(keyword_list)}`\n"
-        f"🎯 Hedef {'çift' if cfg['PAIR_MODE'] == 'pair' else 'item'}: `{TARGET_PAIRS}` / keyword\n\n"
+        f"🎯 Hedef {target_label}: `{TARGET_PAIRS}` / keyword\n\n"
         f"⚙️ Hazırlanıyor, lütfen bekle…",
         reply_markup=main_menu_keyboard(),
         parse_mode="Markdown"
     )
 
     _job_stop.clear()
-    _active_task = asyncio.create_task(job_task(update, ctx, keyword_list, cfg, cookie))
+    _active_task = asyncio.create_task(job_task(update, ctx, keyword_list, cfg, cookie, ugc_cat))
 
 # ─── Background job (Async Task) ──────────────────────────────────────────────
-async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_list, cfg, cookie):
+async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_list, cfg, cookie, ugc_cat=None):
     async def send(msg, **kwargs):
         try:
             return await update.message.reply_text(msg, parse_mode="Markdown", **kwargs)
@@ -826,7 +874,7 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         upload_count = await upload_pair_with_crosslink(asset_id, shirt_path, pants_id, pants_path, keyword, uploader, upload_count, cfg)
                         _job_info["uploads"] = upload_count
 
-            else: # single mode
+            elif pair_mode == "single":
                 single_type = cfg.get("SINGLE_TYPE", 11)
                 type_name = "shirt" if single_type == 11 else "pants"
                 async for asset_id, item_url, creator, current_item_name in roblox.search_and_yield_assets(keyword, asset_type=single_type):
@@ -900,6 +948,46 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         except asyncio.TimeoutError:
                             items_found -= 1; await send(f"❌ Onay zaman aşımı, atlandı."); do_upload = False; continue
 
+                    if do_upload and uploader:
+                        await send("☁️ Yükleniyor…")
+                        upload_count = await upload_single_asset(asset_id, out_path, keyword, uploader, upload_count, cfg, item_type=single_type)
+                        _job_info["uploads"] = upload_count
+                        
+            elif pair_mode == "ugc":
+                if not ugc_cat:
+                    await send("❌ Hata: UGC kategorisi seçilmemiş.")
+                    break
+                    
+                async for asset_id, item_url, creator, current_item_name in roblox.search_and_yield_assets(keyword, asset_type=ugc_cat):
+                    if _job_stop.is_set() or items_found >= target_pairs: break
+                    
+                    cat_names = {8: "Hat", 41: "Hair", 42: "Face", 43: "Neck", 44: "Shoulder", 45: "Front", 46: "Back", 47: "Waist"}
+                    c_name = cat_names.get(ugc_cat, "UGC")
+                    
+                    items_found += 1
+                    _job_info["pairs_done"] = items_found
+                    await send(f"⏳ *{keyword.title()}* için {items_found}. 3D Asset Hazırlanıyor: `{current_item_name}`...")
+                    
+                    zip_path = await downloader.download_ugc_asset(asset_id, keyword, c_name)
+                    if not zip_path: 
+                        items_found -= 1
+                        _job_info["pairs_done"] = items_found
+                        await send(f"❌ *{current_item_name}* içeriği indirilemedi. Geçiliyor...")
+                        continue
+                    
+                    try:
+                        with open(zip_path, "rb") as f_zip:
+                            await update.message.reply_document(
+                                document=f_zip,
+                                caption=f"📦 *3D UGC Asset:* `{current_item_name}`\n🔗 [Roblox Linki]({item_url})",
+                                parse_mode="Markdown"
+                            )
+                        upload_count += 1
+                        _job_info["uploads"] = upload_count
+                        Logger.success(f"{current_item_name} başarıyla gönderildi.")
+                    except Exception as e:
+                        Logger.error(f"ZIP Gönderme hatası: {e}")
+                        await send(f"⚠️ `{current_item_name}` gönderilemedi: {e}")
                     if do_upload and uploader:
                         await send("☁️ Yükleniyor…")
                         upload_count = await upload_single_asset(asset_id, out_path, keyword, uploader, upload_count, cfg, item_type=single_type)

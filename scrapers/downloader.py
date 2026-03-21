@@ -101,3 +101,77 @@ class AssetDownloader:
 
         Logger.error(f"Şablon indirilemedi: {asset_id}")
         return None
+
+    async def download_ugc_asset(self, asset_id, keyword, category_name):
+        """UGC Accessory indirir (Mesh ve Texture) ve ZIP dosyasının yolunu döndürür."""
+        import zipfile
+        Logger.download(f"UGC Asset indiriliyor: {asset_id}")
+        
+        cookie = self._load_cookie()
+        headers = {"User-Agent": "Roblox/WinInet"}
+        if cookie:
+            headers["Cookie"] = f".ROBLOSECURITY={cookie}"
+
+        # 1. Accessory XML/Binary dosyasını al
+        url = f"https://assetdelivery.roblox.com/v1/asset/?id={asset_id}"
+        try:
+            resp = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
+            if resp.status_code != 200:
+                Logger.error(f"UGC Dosyası İndirme Hatası: {resp.status_code}")
+                return None
+        except Exception as e:
+            Logger.error(f"UGC URL Hatası: {e}")
+            return None
+            
+        content_text = resp.content.decode('utf-8', errors='ignore')
+        
+        # 2. MeshId ve TextureId'yi regex ile bul (hem rbxassetid:// hem id= formatı)
+        # Bazen XML formatında <Content name="MeshId"><url>rbxassetid://1234</url></Content> şeklindedir
+        mesh_id_match = re.search(r'<Content name="MeshId">.*?(?:rbxassetid://|id=)(\d+)', content_text)
+        texture_id_match = re.search(r'<Content name="TextureId">.*?(?:rbxassetid://|id=)(\d+)', content_text)
+        
+        # Eğer MeshPart ise veya farklı JSON/Binary yapıdaysa
+        if not mesh_id_match:
+            mesh_id_match = re.search(r'"MeshId".*?(?:rbxassetid://|id=)(\d+)', content_text)
+        if not texture_id_match:
+            texture_id_match = re.search(r'"TextureID".*?(?:rbxassetid://|id=)(\d+)', content_text)
+            
+        if not mesh_id_match:
+            Logger.warn(f"Mesh ID bulunamadı (Asset: {asset_id}). Belki MeshPart değildir veya okunamadı.")
+            return None
+            
+        mesh_id = mesh_id_match.group(1)
+        texture_id = texture_id_match.group(1) if texture_id_match else None
+        
+        os.makedirs("downloads/ugc", exist_ok=True)
+        # keyword'i dosya adına uygun hale getir (boşlukları sil vb)
+        safe_kw = re.sub(r'[^A-Za-z0-9]', '_', keyword)
+        zip_path = f"downloads/ugc/{asset_id}_{safe_kw}_{category_name}.zip"
+        
+        try:
+            with zipfile.ZipFile(zip_path, 'w') as zipf:
+                # İndir: Mesh
+                mesh_url = f"https://assetdelivery.roblox.com/v1/asset/?id={mesh_id}"
+                m_resp = requests.get(mesh_url, headers=headers, timeout=10)
+                if m_resp.status_code == 200:
+                    # obj ise .obj, değilse .mesh
+                    ext = ".obj" if m_resp.content.startswith(b"v ") else ".mesh"
+                    zipf.writestr(f"{asset_id}_mesh{ext}", m_resp.content)
+                else:
+                    Logger.error(f"Mesh indirilemedi: {mesh_id}")
+                    return None
+                    
+                # İndir: Texture
+                if texture_id:
+                    tex_url = f"https://assetdelivery.roblox.com/v1/asset/?id={texture_id}"
+                    t_resp = requests.get(tex_url, headers=headers, timeout=10)
+                    if t_resp.status_code == 200:
+                        zipf.writestr(f"{asset_id}_texture.png", t_resp.content)
+                    else:
+                        Logger.warn(f"Texture indirilemedi: {texture_id}")
+            
+            Logger.success(f"UGC Zip başarıyla oluşturuldu: {zip_path}")
+            return zip_path
+        except Exception as e:
+            Logger.error(f"ZIP Oluşturma Hatası: {e}")
+            return None

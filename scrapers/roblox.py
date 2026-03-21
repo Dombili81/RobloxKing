@@ -66,19 +66,19 @@ class RobloxScraper:
         await self.stop()
 
     async def search_and_get_assets(self, keyword, count=5, asset_type=11):
-        asset_name = "Shirt" if asset_type == 11 else "Pants"
+        asset_name = "Shirt" if asset_type == 11 else "Pants" if asset_type == 12 else f"Accessory_{asset_type}"
+        category = 3 if asset_type in (11, 12, 2) else 11
         Logger.search(f"Marketplace taranıyor: {keyword} ({asset_name})")
         
         found_assets = []
         cursor = ""
         url = "https://catalog.roblox.com/v1/search/items/details"
 
-        # Strategy: Use category=3 (Clothing) + specific assetTypes filter
-        # and configurable sort so that we can prioritize e.g. best selling.
+        # Strategy: Use category=3 for Clothing or 11 for Accessories + specific assetTypes filter
         for page in range(4):
             params = {
                 "keyword": keyword,
-                "category": 3,
+                "category": category,
                 "assetTypes": asset_type,
                 "limit": 30,
                 "cursor": cursor,
@@ -121,7 +121,8 @@ class RobloxScraper:
         return []
 
     async def search_and_yield_assets(self, keyword, asset_type=11):
-        asset_name = "Shirt" if asset_type == 11 else "Pants"
+        asset_name = "Shirt" if asset_type == 11 else "Pants" if asset_type == 12 else f"Accessory_{asset_type}"
+        category = 3 if asset_type in (11, 12, 2) else 11
         Logger.search(f"{keyword} için stream başlatıldı ({asset_name})")
         
         cursor = ""
@@ -131,7 +132,7 @@ class RobloxScraper:
         for page in range(10): # Deep scan capability
             params = {
                 "keyword": keyword,
-                "category": 3,
+                "category": category,
                 "assetTypes": asset_type,
                 "limit": 30,
                 "cursor": cursor,
