@@ -19,6 +19,7 @@ from scrapers.uploader   import AssetUploader
 from scrapers.finance    import GroupFinanceMonitor
 from scrapers.firebase_db import FirebaseManager
 from scrapers.utils import Logger, md_escape
+from scrapers.ugc_mesh_processor import process_ugc_catalog_zip
 from main import generate_metadata, download_and_design, upload_pair_with_crosslink, upload_single_asset
 
 # ─── Firebase Init ───────────────────────────────────────────────────────────
@@ -975,6 +976,20 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         _job_info["pairs_done"] = items_found
                         await send(f"❌ *{md_escape(current_item_name)}* içeriği indirilemedi. Geçiliyor...")
                         continue
+
+                    # İndirilen mesh/texture üzerinde sunucu tarafı dönüşüm (Blender yok; bkz. ugc_mesh_processor)
+                    try:
+                        processed_zip = await asyncio.to_thread(process_ugc_catalog_zip, zip_path, keyword)
+                        if processed_zip:
+                            zip_path = processed_zip
+                    except Exception as proc_err:
+                        Logger.warn(f"UGC mesh işleme atlandı: {proc_err}")
+
+                    ugc_pack_label = (
+                        "işlenmiş paket (original + processed)"
+                        if "_processed" in os.path.basename(zip_path)
+                        else "ham indirme"
+                    )
                     
                     thumb_url = await roblox.get_thumbnail(asset_id)
                     
@@ -1033,7 +1048,11 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                     with open(zip_path, "rb") as f_zip:
                                         await update.message.reply_document(
                                             document=f_zip,
-                                            caption=f"📦 *3D UGC Asset:* `{md_escape(current_item_name)}`\n🔗 {item_url}",
+                                            caption=(
+                                                f"📦 *3D UGC ({ugc_pack_label}):* `{md_escape(current_item_name)}`\n"
+                                                f"`processed/` klasörü + `README_LEGAL.txt` (yükleme/ToS)\n"
+                                                f"🔗 {item_url}"
+                                            ),
                                             parse_mode="Markdown"
                                         )
                                     upload_count += 1
@@ -1065,7 +1084,11 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                             with open(zip_path, "rb") as f_zip:
                                 await update.message.reply_document(
                                     document=f_zip,
-                                    caption=f"📦 *3D UGC Asset:* `{md_escape(current_item_name)}`\n🔗 {item_url}",
+                                    caption=(
+                                        f"📦 *3D UGC ({ugc_pack_label}):* `{md_escape(current_item_name)}`\n"
+                                        f"`processed/` + yasal uyarılar\n"
+                                        f"🔗 {item_url}"
+                                    ),
                                     parse_mode="Markdown"
                                 )
                             upload_count += 1

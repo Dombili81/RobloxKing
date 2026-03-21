@@ -24,7 +24,7 @@ source venv/bin/activate
 
 echo "=== Bağımlılıklar kuruluyor... ==="
 pip install --upgrade pip
-pip install requests Pillow "python-telegram-bot[job-queue]"
+pip install -r requirements.txt
 
 echo "=== output/ klasörü oluşturuluyor... ==="
 mkdir -p output
