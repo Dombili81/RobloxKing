@@ -125,22 +125,32 @@ class AssetDownloader:
             
         content_text = resp.content.decode('utf-8', errors='ignore')
         
-        # 2. MeshId ve TextureId'yi regex ile bul (hem rbxassetid:// hem id= formatı)
-        # Bazen XML formatında <Content name="MeshId"><url>rbxassetid://1234</url></Content> şeklindedir
-        mesh_id_match = re.search(r'<Content name="MeshId">.*?(?:rbxassetid://|id=)(\d+)', content_text)
-        texture_id_match = re.search(r'<Content name="TextureId">.*?(?:rbxassetid://|id=)(\d+)', content_text)
+        # 2. MeshId ve TextureId'yi regex ile bul (daha esnek regex)
+        # XML, JSON veya Binary içindeki ID'leri yakalamaya çalışır
+        mesh_id_match = (
+            re.search(r'MeshId.*?(\d+)', content_text, re.IGNORECASE) or 
+            re.search(r'rbxassetid://(\d+)', content_text)
+        )
+        texture_id_match = (
+            re.search(r'TextureId.*?(\d+)', content_text, re.IGNORECASE) or
+            re.search(r'TextureID.*?(\d+)', content_text, re.IGNORECASE)
+        )
         
-        # Eğer MeshPart ise veya farklı JSON/Binary yapıdaysa
         if not mesh_id_match:
-            mesh_id_match = re.search(r'"MeshId".*?(?:rbxassetid://|id=)(\d+)', content_text)
-        if not texture_id_match:
-            texture_id_match = re.search(r'"TextureID".*?(?:rbxassetid://|id=)(\d+)', content_text)
+            # Yedek: XML tag'leri arasında ara
+            mesh_id_match = re.search(r'<url>.*?(?:id=)?(\d+)</url>', content_text)
             
         if not mesh_id_match:
-            Logger.warn(f"Mesh ID bulunamadı (Asset: {asset_id}). Belki MeshPart değildir veya okunamadı.")
+            Logger.warn(f"Mesh ID bulunamadı (Asset: {asset_id}).")
             return None
             
         mesh_id = mesh_id_match.group(1)
+        # TextureId bazen MeshId ile aynı yerde geçer, bazen geçmez.
+        # Eğer ilk aramada bulunamadıysa MeshId sonrasına bak.
+        if not texture_id_match:
+            after_mesh = content_text[mesh_id_match.end():]
+            texture_id_match = re.search(r'(\d+)', after_mesh) if "Texture" in after_mesh else None
+            
         texture_id = texture_id_match.group(1) if texture_id_match else None
         
         os.makedirs("downloads/ugc", exist_ok=True)

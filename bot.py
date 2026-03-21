@@ -976,6 +976,14 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         continue
                     
                     try:
+                        thumb_url = await roblox.get_thumbnail(asset_id)
+                        if thumb_url:
+                            await update.message.reply_photo(
+                                photo=thumb_url,
+                                caption=f"🖼️ *Görsel Önizleme:* `{current_item_name}`",
+                                parse_mode="Markdown"
+                            )
+                            
                         with open(zip_path, "rb") as f_zip:
                             await update.message.reply_document(
                                 document=f_zip,
@@ -993,7 +1001,9 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         upload_count = await upload_single_asset(asset_id, out_path, keyword, uploader, upload_count, cfg, item_type=single_type)
                         _job_info["uploads"] = upload_count
 
-        await send(f"🏁 İş tamamlandı! Toplam yüklenen: `{upload_count}`", reply_markup=back_keyboard())
+        # Final count message logic
+        finish_label = "yüklenen" if pair_mode != "ugc" else "gönderilen"
+        await send(f"🏁 İş tamamlandı! Toplam {finish_label}: `{upload_count}`", reply_markup=back_keyboard())
     except Exception as e:
         Logger.error(f"İŞ SIRASINDA KRİTİK HATA: {e}")
         await send(f"⚠️ Kritik Hata: {e}")

@@ -74,17 +74,23 @@ class RobloxScraper:
         cursor = ""
         url = "https://catalog.roblox.com/v1/search/items/details"
 
-        # Strategy: Use category=3 for Clothing or 11 for Accessories + specific assetTypes filter
+        subcat_map = {8: 9, 41: 20, 42: 21, 43: 22, 44: 23, 45: 24, 46: 25, 47: 26}
+        subcategory = subcat_map.get(asset_type) if category == 11 else None
+
         for page in range(4):
             params = {
                 "keyword": keyword,
                 "category": category,
-                "assetTypes": asset_type,
                 "limit": 30,
                 "cursor": cursor,
                 "sortType": self.sort_type,
                 "sortAggregation": self.sort_agg,
             }
+            if category == 11 and subcategory:
+                params["subcategory"] = subcategory
+            else:
+                params["assetTypes"] = asset_type
+                
             try:
                 response = self._request_with_retry("GET", url, params=params, timeout=10)
                 if response and response.status_code == 200:
@@ -129,16 +135,25 @@ class RobloxScraper:
         url = "https://catalog.roblox.com/v1/search/items/details"
         seen_ids = set()
 
+        # Correction: Accessories category is 11, Subcategory mapping for accessories
+        # Hat: 9, Hair: 20, Face: 21, Neck: 22, Shoulder: 23, Front: 24, Back: 25, Waist: 26
+        subcat_map = {8: 9, 41: 20, 42: 21, 43: 22, 44: 23, 45: 24, 46: 25, 47: 26}
+        subcategory = subcat_map.get(asset_type) if category == 11 else None
+
         for page in range(10): # Deep scan capability
             params = {
                 "keyword": keyword,
                 "category": category,
-                "assetTypes": asset_type,
                 "limit": 30,
                 "cursor": cursor,
                 "sortType": self.sort_type,
                 "sortAggregation": self.sort_agg,
             }
+            if category == 11 and subcategory:
+                params["subcategory"] = subcategory
+            else:
+                params["assetTypes"] = asset_type
+                
             try:
                 response = self._request_with_retry("GET", url, params=params, timeout=10)
                 if response and response.status_code == 200:
@@ -268,4 +283,17 @@ class RobloxScraper:
 
         self._desc_cache[shirt_asset_id] = pants_assets
         return pants_assets
+
+    async def get_thumbnail(self, asset_id: str) -> str | None:
+        """Katalog eşyası için thumbnail URL'si alır."""
+        url = f"https://thumbnails.roblox.com/v1/assets?assetIds={asset_id}&size=420x420&format=Png&isCircular=false"
+        try:
+            r = self.session.get(url, timeout=10)
+            if r.status_code == 200:
+                data = r.json().get("data", [])
+                if data:
+                    return data[0].get("imageUrl")
+        except Exception as e:
+            Logger.debug(f"Thumbnail hatası ({asset_id}): {e}")
+        return None
 
