@@ -74,7 +74,17 @@ class RobloxScraper:
         cursor = ""
         url = "https://catalog.roblox.com/v1/search/items/details"
 
-        subcat_map = {8: 9, 41: 20, 42: 21, 43: 22, 44: 23, 45: 24, 46: 25, 47: 26}
+        subcat_map = {
+            # Roblox Catalog API v1 subcategory values
+            8: 8,   # Hat (ClassicHat)
+            41: 9,  # Hair (HairAccessories)
+            42: 10, # Face (FaceAccessories)
+            43: 11, # Neck (NeckAccessories)
+            44: 12, # Shoulder (ShoulderAccessories)
+            45: 13, # Front (FrontAccessories)
+            46: 14, # Back (BackAccessories)
+            47: 15, # Waist (WaistAccessories)
+        }
         subcategory = subcat_map.get(asset_type) if category == 11 else None
 
         for page in range(4):
@@ -101,7 +111,7 @@ class RobloxScraper:
                     Logger.debug(f"Sayfa {page+1} tarandı. {len(listings)} ürün bulundu.")
                     
                     for item in listings:
-                        if item.get("assetType") == asset_type:
+                        if item.get("id"):
                             asset_id = str(item.get("id"))
                             # Avoid duplicates
                             if any(a[0] == asset_id for a in found_assets):
@@ -127,32 +137,42 @@ class RobloxScraper:
         return []
 
     async def search_and_yield_assets(self, keyword, asset_type=11):
-        asset_name = "Shirt" if asset_type == 11 else "Pants" if asset_type == 12 else f"Accessory_{asset_type}"
-        category = 3 if asset_type in (11, 12, 2) else 11
+        is_clothing = asset_type in (11, 12, 2)
+        is_accessory = asset_type in (8, 41, 42, 43, 44, 45, 46, 47)
+        
+        asset_name_map = {
+            11: "Shirt", 12: "Pants",
+            8: "Hat", 41: "Hair", 42: "Face", 43: "Neck",
+            44: "Shoulder", 45: "Front", 46: "Back", 47: "Waist"
+        }
+        asset_name = asset_name_map.get(asset_type, f"Accessory_{asset_type}")
         Logger.search(f"{keyword} için stream başlatıldı ({asset_name})")
         
         cursor = ""
         url = "https://catalog.roblox.com/v1/search/items/details"
         seen_ids = set()
 
-        # Correction: Accessories category is 11, Subcategory mapping for accessories
-        # Hat: 9, Hair: 20, Face: 21, Neck: 22, Shoulder: 23, Front: 24, Back: 25, Waist: 26
-        subcat_map = {8: 9, 41: 20, 42: 21, 43: 22, 44: 23, 45: 24, 46: 25, 47: 26}
-        subcategory = subcat_map.get(asset_type) if category == 11 else None
-
-        for page in range(10): # Deep scan capability
-            params = {
-                "keyword": keyword,
-                "category": category,
-                "limit": 30,
-                "cursor": cursor,
-                "sortType": self.sort_type,
-                "sortAggregation": self.sort_agg,
-            }
-            if category == 11 and subcategory:
-                params["subcategory"] = subcategory
+        # All accessories: search entire catalog by keyword only (subcategory filter broken for Hat/Hair)
+        for page in range(10):
+            if is_clothing:
+                params = {
+                    "keyword": keyword,
+                    "category": 3,
+                    "assetTypes": asset_type,
+                    "limit": 30,
+                    "cursor": cursor,
+                    "sortType": self.sort_type,
+                    "sortAggregation": self.sort_agg,
+                }
             else:
-                params["assetTypes"] = asset_type
+                # Accessories — no category/subcategory, search whole catalog by keyword
+                params = {
+                    "keyword": keyword,
+                    "limit": 30,
+                    "cursor": cursor,
+                    "sortType": self.sort_type,
+                    "sortAggregation": self.sort_agg,
+                }
                 
             try:
                 response = self._request_with_retry("GET", url, params=params, timeout=10)
@@ -164,7 +184,7 @@ class RobloxScraper:
                     Logger.debug(f"Stream Sayfa {page+1} tarandı. {len(listings)} ürün bulundu.")
                     
                     for item in listings:
-                        if item.get("assetType") == asset_type:
+                        if item.get("id"):
                             asset_id = str(item.get("id"))
                             if asset_id in seen_ids:
                                 continue

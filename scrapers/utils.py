@@ -47,3 +47,9 @@ class Logger:
     def debug(msg):
         # Silenced by default. Change to print(f"DEBUG: {msg}") if needed.
         pass
+
+def md_escape(text: str) -> str:
+    """Telegram Markdown V1 için özel karakterleri escape et."""
+    for ch in ['*', '_', '`', '[', ']']:
+        text = text.replace(ch, '\\' + ch)
+    return text

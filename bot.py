@@ -18,7 +18,7 @@ from scrapers.designer   import TemplateDesigner
 from scrapers.uploader   import AssetUploader
 from scrapers.finance    import GroupFinanceMonitor
 from scrapers.firebase_db import FirebaseManager
-from scrapers.utils import Logger
+from scrapers.utils import Logger, md_escape
 from main import generate_metadata, download_and_design, upload_pair_with_crosslink, upload_single_asset
 
 # ─── Firebase Init ───────────────────────────────────────────────────────────
@@ -957,49 +957,123 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                 if not ugc_cat:
                     await send("❌ Hata: UGC kategorisi seçilmemiş.")
                     break
+                
+                cat_names = {8: "Hat", 41: "Hair", 42: "Face", 43: "Neck", 44: "Shoulder", 45: "Front", 46: "Back", 47: "Waist"}
+                c_name = cat_names.get(ugc_cat, "UGC")
                     
                 async for asset_id, item_url, creator, current_item_name in roblox.search_and_yield_assets(keyword, asset_type=ugc_cat):
                     if _job_stop.is_set() or items_found >= target_pairs: break
                     
-                    cat_names = {8: "Hat", 41: "Hair", 42: "Face", 43: "Neck", 44: "Shoulder", 45: "Front", 46: "Back", 47: "Waist"}
-                    c_name = cat_names.get(ugc_cat, "UGC")
-                    
                     items_found += 1
                     _job_info["pairs_done"] = items_found
-                    await send(f"⏳ *{keyword.title()}* için {items_found}. 3D Asset Hazırlanıyor: `{current_item_name}`...")
+                    safe_name = md_escape(current_item_name)
+                    await send(f"⏳ *{md_escape(keyword.title())}* için {items_found}. 3D Asset Hazırlanıyor: `{safe_name}`...")
                     
                     zip_path = await downloader.download_ugc_asset(asset_id, keyword, c_name)
                     if not zip_path: 
                         items_found -= 1
                         _job_info["pairs_done"] = items_found
-                        await send(f"❌ *{current_item_name}* içeriği indirilemedi. Geçiliyor...")
+                        await send(f"❌ *{md_escape(current_item_name)}* içeriği indirilemedi. Geçiliyor...")
                         continue
                     
-                    try:
-                        thumb_url = await roblox.get_thumbnail(asset_id)
-                        if thumb_url:
-                            await update.message.reply_photo(
-                                photo=thumb_url,
-                                caption=f"🖼️ *Görsel Önizleme:* `{current_item_name}`",
-                                parse_mode="Markdown"
-                            )
+                    thumb_url = await roblox.get_thumbnail(asset_id)
+                    
+                    if require_approval:
+                        # ── Approval flow for UGC ──
+                        unique_id = f"{asset_id}_ugc"
+                        event = asyncio.Event()
+                        with _pending_lock:
+                            _pending_events[unique_id] = event
+                            _pending_items[unique_id] = {"zip_path": zip_path, "asset_id": asset_id, "name": current_item_name, "url": item_url}
+                        
+                        approval_kb = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}")],
+                            [InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}"),
+                             InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}")],
+                            [InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
+                        ])
+                        
+                        try:
+                            if thumb_url:
+                                await update.message.reply_photo(
+                                    photo=thumb_url,
+                                    caption=(
+                                        f"⏳ *{items_found}. 3D Asset Onay Bekliyor*\n\n"
+                                        f"📦 Tip: `{md_escape(c_name)}`\n"
+                                        f"📝 Ad: `{md_escape(current_item_name)}`\n"
+                                        f"🔗 Roblox: {item_url}\n\n"
+                                        f"İndirilsin mi?"
+                                    ),
+                                    reply_markup=approval_kb,
+                                    parse_mode="Markdown"
+                                )
+                            else:
+                                await send(
+                                    f"⏳ *{items_found}. 3D Asset Onay Bekliyor*\n\n"
+                                    f"📦 Tip: `{md_escape(c_name)}`\n"
+                                    f"📝 Ad: `{md_escape(current_item_name)}`\n"
+                                    f"🔗 Roblox: {item_url}\n\n"
+                                    f"İndirilsin mi?",
+                                    reply_markup=approval_kb
+                                )
+                        except Exception as e:
+                            Logger.error(f"UGC Önizleme hatası: {e}")
+                            await send(f"⚠️ Önizleme gönderilemeçdi ama onay bekleniyor...", reply_markup=approval_kb)
+                        
+                        try:
+                            await asyncio.wait_for(event.wait(), timeout=360)
+                            with _pending_lock:
+                                status = _pending_status.pop(unique_id, "skip")
+                                _pending_events.pop(unique_id, None)
+                                item_data = _pending_items.pop(unique_id, None)
                             
-                        with open(zip_path, "rb") as f_zip:
-                            await update.message.reply_document(
-                                document=f_zip,
-                                caption=f"📦 *3D UGC Asset:* `{current_item_name}`\n🔗 [Roblox Linki]({item_url})",
-                                parse_mode="Markdown"
-                            )
-                        upload_count += 1
-                        _job_info["uploads"] = upload_count
-                        Logger.success(f"{current_item_name} başarıyla gönderildi.")
-                    except Exception as e:
-                        Logger.error(f"ZIP Gönderme hatası: {e}")
-                        await send(f"⚠️ `{current_item_name}` gönderilemedi: {e}")
-                    if do_upload and uploader:
-                        await send("☁️ Yükleniyor…")
-                        upload_count = await upload_single_asset(asset_id, out_path, keyword, uploader, upload_count, cfg, item_type=single_type)
-                        _job_info["uploads"] = upload_count
+                            if status == "approve" and item_data:
+                                # Send the ZIP
+                                try:
+                                    with open(zip_path, "rb") as f_zip:
+                                        await update.message.reply_document(
+                                            document=f_zip,
+                                            caption=f"📦 *3D UGC Asset:* `{md_escape(current_item_name)}`\n🔗 {item_url}",
+                                            parse_mode="Markdown"
+                                        )
+                                    upload_count += 1
+                                    _job_info["uploads"] = upload_count
+                                    Logger.success(f"{current_item_name} başarıyla gönderildi.")
+                                except Exception as e:
+                                    Logger.error(f"ZIP Gönderme hatası: {e}")
+                                    await send(f"⚠️ `{current_item_name}` gönderilemedi: {e}")
+                            elif status == "stop":
+                                _job_stop.set()
+                                await send("🛑 *İş sonlandırıldı.*", reply_markup=back_keyboard())
+                                break
+                            elif status == "skip":
+                                items_found -= 1  # Yenisini bul — aynı slotu tekrar doldur
+                            # reject → items_found değişmez, sıradakine geç
+                        except asyncio.TimeoutError:
+                            items_found -= 1
+                            await send("❌ Onay zaman aşımı, atlandı.")
+                    
+                    else:
+                        # No approval needed — send immediately
+                        try:
+                            if thumb_url:
+                                await update.message.reply_photo(
+                                    photo=thumb_url,
+                                    caption=f"🖼️ *Görsel Önizleme:* `{current_item_name}`",
+                                    parse_mode="Markdown"
+                                )
+                            with open(zip_path, "rb") as f_zip:
+                                await update.message.reply_document(
+                                    document=f_zip,
+                                    caption=f"📦 *3D UGC Asset:* `{md_escape(current_item_name)}`\n🔗 {item_url}",
+                                    parse_mode="Markdown"
+                                )
+                            upload_count += 1
+                            _job_info["uploads"] = upload_count
+                            Logger.success(f"{current_item_name} başarıyla gönderildi.")
+                        except Exception as e:
+                            Logger.error(f"ZIP Gönderme hatası: {e}")
+                            await send(f"⚠️ `{current_item_name}` gönderilemedi: {e}")
 
         # Final count message logic
         finish_label = "yüklenen" if pair_mode != "ugc" else "gönderilen"

@@ -112,49 +112,63 @@ class AssetDownloader:
         if cookie:
             headers["Cookie"] = f".ROBLOSECURITY={cookie}"
 
-        # 1. Accessory XML/Binary dosyasını al
+        # 1. Önce economy API ile asset detaylarını çek (mesh/texture ID'leri için)
+        mesh_id = None
+        texture_id = None
+        
+        try:
+            det_url = f"https://economy.roblox.com/v2/assets/{asset_id}/details"
+            det_resp = requests.get(det_url, headers=headers, timeout=10)
+            if det_resp.status_code == 200:
+                det_data = det_resp.json()
+                Logger.debug(f"Asset detay alındı: {det_data.get('AssetTypeId')} - {det_data.get('Name')}")
+        except Exception:
+            det_data = {}
+
+        # 2. Accessory XML/Binary dosyasını al ve ID'leri çıkar
         url = f"https://assetdelivery.roblox.com/v1/asset/?id={asset_id}"
         try:
-            resp = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
+            resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
             if resp.status_code != 200:
                 Logger.error(f"UGC Dosyası İndirme Hatası: {resp.status_code}")
                 return None
         except Exception as e:
             Logger.error(f"UGC URL Hatası: {e}")
             return None
-            
-        content_text = resp.content.decode('utf-8', errors='ignore')
         
-        # 2. MeshId ve TextureId'yi regex ile bul (daha esnek regex)
-        # XML, JSON veya Binary içindeki ID'leri yakalamaya çalışır
-        mesh_id_match = (
-            re.search(r'MeshId.*?(\d+)', content_text, re.IGNORECASE) or 
-            re.search(r'rbxassetid://(\d+)', content_text)
-        )
-        texture_id_match = (
-            re.search(r'TextureId.*?(\d+)', content_text, re.IGNORECASE) or
-            re.search(r'TextureID.*?(\d+)', content_text, re.IGNORECASE)
-        )
+        content = resp.content
+        content_text = content.decode('utf-8', errors='ignore')
         
-        if not mesh_id_match:
-            # Yedek: XML tag'leri arasında ara
-            mesh_id_match = re.search(r'<url>.*?(?:id=)?(\d+)</url>', content_text)
-            
-        if not mesh_id_match:
-            Logger.warn(f"Mesh ID bulunamadı (Asset: {asset_id}).")
+        # 3. Daha geniş regex ile ID'leri bul
+        # Binary RBXM formatında ID'ler farklı şekillerde geçer
+        all_ids = re.findall(r'(?:rbxassetid://|id=|MeshId|TextureId|TextureID)[^\d]*(\d{5,})', content_text, re.IGNORECASE)
+        bare_ids = re.findall(r'\b(\d{8,})\b', content_text)  # Uzun sayılar (IDs genellikle 8+ hane)
+        all_candidate_ids = all_ids + bare_ids
+        
+        # MeshId (genellikle ilk bulunan büyük ID)
+        mesh_patterns = re.findall(r'MeshId[^\d]*(\d+)', content_text, re.IGNORECASE)
+        if mesh_patterns:
+            mesh_id = mesh_patterns[0]
+        elif all_ids:
+            mesh_id = all_ids[0]
+        elif all_candidate_ids:
+            mesh_id = all_candidate_ids[0]
+
+        # TextureId (MeshId'den sonraki ID)  
+        texture_patterns = re.findall(r'(?:TextureId|TextureID)[^\d]*(\d+)', content_text, re.IGNORECASE)
+        if texture_patterns:
+            texture_id = texture_patterns[0]
+        elif len(all_ids) > 1:
+            texture_id = all_ids[1]
+        
+        if not mesh_id:
+            Logger.warn(f"Mesh ID bulunamadı (Asset: {asset_id}). İçerik uzunluğu: {len(content)}")
+            Logger.debug(f"İçerik önizleme: {content_text[:500]}")
             return None
-            
-        mesh_id = mesh_id_match.group(1)
-        # TextureId bazen MeshId ile aynı yerde geçer, bazen geçmez.
-        # Eğer ilk aramada bulunamadıysa MeshId sonrasına bak.
-        if not texture_id_match:
-            after_mesh = content_text[mesh_id_match.end():]
-            texture_id_match = re.search(r'(\d+)', after_mesh) if "Texture" in after_mesh else None
-            
-        texture_id = texture_id_match.group(1) if texture_id_match else None
         
+        Logger.debug(f"Mesh ID: {mesh_id}, Texture ID: {texture_id}")
+            
         os.makedirs("downloads/ugc", exist_ok=True)
-        # keyword'i dosya adına uygun hale getir (boşlukları sil vb)
         safe_kw = re.sub(r'[^A-Za-z0-9]', '_', keyword)
         zip_path = f"downloads/ugc/{asset_id}_{safe_kw}_{category_name}.zip"
         
@@ -162,21 +176,22 @@ class AssetDownloader:
             with zipfile.ZipFile(zip_path, 'w') as zipf:
                 # İndir: Mesh
                 mesh_url = f"https://assetdelivery.roblox.com/v1/asset/?id={mesh_id}"
-                m_resp = requests.get(mesh_url, headers=headers, timeout=10)
+                m_resp = requests.get(mesh_url, headers=headers, timeout=15)
                 if m_resp.status_code == 200:
-                    # obj ise .obj, değilse .mesh
                     ext = ".obj" if m_resp.content.startswith(b"v ") else ".mesh"
                     zipf.writestr(f"{asset_id}_mesh{ext}", m_resp.content)
+                    Logger.debug(f"Mesh indirildi ({len(m_resp.content)} byte)")
                 else:
-                    Logger.error(f"Mesh indirilemedi: {mesh_id}")
+                    Logger.error(f"Mesh indirilemedi: {mesh_id} (Status: {m_resp.status_code})")
                     return None
                     
                 # İndir: Texture
                 if texture_id:
                     tex_url = f"https://assetdelivery.roblox.com/v1/asset/?id={texture_id}"
-                    t_resp = requests.get(tex_url, headers=headers, timeout=10)
+                    t_resp = requests.get(tex_url, headers=headers, timeout=15)
                     if t_resp.status_code == 200:
                         zipf.writestr(f"{asset_id}_texture.png", t_resp.content)
+                        Logger.debug(f"Texture indirildi ({len(t_resp.content)} byte)")
                     else:
                         Logger.warn(f"Texture indirilemedi: {texture_id}")
             
