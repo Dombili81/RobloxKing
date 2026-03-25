@@ -472,6 +472,107 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     # ── Onay callbacks ──
+    elif data.startswith("edit_menu_"):
+        # edit_menu_[unique_id]
+        unique_id = data[10:] # Robustly get everything after 'edit_menu_'
+        kb_buttons = [
+            [InlineKeyboardButton("👕 Shirt", callback_data=f"edit_sel_s_{unique_id}"),
+             InlineKeyboardButton("👖 Pants", callback_data=f"edit_sel_p_{unique_id}")],
+            [InlineKeyboardButton("⬅️ Vazgeç", callback_data=f"refresh_{unique_id}")]
+        ]
+        await q.edit_message_text("✏️ *Düzenleme Menüsü*\n\nHangi ürünü düzenlemek istiyorsun?", reply_markup=InlineKeyboardMarkup(kb_buttons), parse_mode="Markdown")
+
+    elif data.startswith("edit_sel_"):
+        asset_prefix = "s" if "_sel_s_" in data else "p"
+        unique_id = data.replace(f"edit_sel_{asset_prefix}_", "")
+        Logger.info(f"DEBUG: edit_sel asset={asset_prefix} unique_id='{unique_id}'")
+        
+        with _pending_lock:
+            meta = _pending_items[unique_id]["metadata"] if unique_id in _pending_items else {}
+            if asset_prefix == "s":
+                name, desc = meta.get("shirt_name", ""), meta.get("shirt_desc", "")
+            else:
+                name, desc = meta.get("pants_name", ""), meta.get("pants_desc", "")
+
+        kb_buttons = [
+            [InlineKeyboardButton("✏️ Adı Düzenle", callback_data=f"edit_{asset_prefix}_name_{unique_id}"),
+             InlineKeyboardButton("📜 Açıklamayı Düzenle", callback_data=f"edit_{asset_prefix}_desc_{unique_id}")],
+            [InlineKeyboardButton("⬅️ Geri", callback_data=f"edit_menu_{unique_id}")]
+        ]
+        
+        label = "Shirt" if asset_prefix == "s" else "Pants"
+        await q.edit_message_text(
+            f"✏️ *{label} Düzenleniyor*\n\n"
+            f"📌 *Mevcut Ad:* `{md_escape(name)}`\n"
+            f"📜 *Mevcut Açıklama:* `{md_escape(desc)}`\n\n"
+            f"Neyi değiştirmek istersin?",
+            reply_markup=InlineKeyboardMarkup(kb_buttons), parse_mode="Markdown"
+        )
+
+    elif data.startswith("refresh_"):
+        unique_id = data.replace("refresh_", "")
+        event = _pending_events.get(unique_id)
+        if event:
+            _pending_status[unique_id] = "edit"
+            event.set()
+            await q.answer("Geri dönülüyor...")
+
+    elif data.startswith("edit_"):
+        # formats: edit_[s/p]_[name/desc]_[unique_id]
+        if "_name_" in data:
+            asset_prefix = "s" if "_s_name_" in data else "p"
+            kind = f"{asset_prefix}_name"
+            # find everything after 'name_'
+            unique_id = data.split("_name_")[-1]
+        elif "_desc_" in data:
+            asset_prefix = "s" if "_s_desc_" in data else "p"
+            kind = f"{asset_prefix}_desc"
+            unique_id = data.split("_desc_")[-1]
+        else:
+            kind = "name"
+            unique_id = data.replace("edit_", "")
+            
+        Logger.info(f"DEBUG CALLBACK: edit_ kind='{kind}' ID='{unique_id}'")
+        
+        with _pending_lock:
+            meta = _pending_items[unique_id]["metadata"] if unique_id in _pending_items else {}
+            if kind == "s_name": current_val = meta.get("shirt_name", "")
+            elif kind == "s_desc": current_val = meta.get("shirt_desc", "")
+            elif kind == "p_name": current_val = meta.get("pants_name", "")
+            elif kind == "p_desc": current_val = meta.get("pants_desc", "")
+            else: current_val = meta.get("name", "")
+        
+        ctx.user_data["awaiting"] = f"edit_{kind}_{unique_id}"
+        Logger.info(f"DEBUG: Setting awaiting to '{ctx.user_data['awaiting']}'")
+        await q.answer("Düzenleme başlatıldı...")
+        
+        prompts = {
+            "s_name": "👕 Yeni Shirt Adını yazın:", "s_desc": "📜 Yeni Shirt Açıklamasını yazın:",
+            "p_name": "👖 Yeni Pants Adını yazın:", "p_desc": "📜 Yeni Pants Açıklamasını yazın:",
+            "name": "✏️ Yeni ürün adını yazın:", "desc": "📜 Yeni ürün açıklamasını yazın:"
+        }
+        await q.message.reply_text(
+            f"✏️ *Mevcut Değer:*\n`{md_escape(current_val)}`\n\n"
+            f"{prompts.get(kind, 'Lütfen yeni değeri yazın:')}",
+            parse_mode="Markdown"
+        )
+
+    elif data.startswith("back_"):
+        unique_id = data.replace("back_", "")
+        has_item = False
+        event = None
+        with _pending_lock:
+            if unique_id in _pending_items:
+                has_item = True
+                _pending_status[unique_id] = "back"
+                event = _pending_events.get(unique_id)
+        
+        if has_item:
+            if event: event.set()
+            await q.answer("Geri dönülüyor...")
+        else:
+            await q.answer("⚠️ Geri dönecek ürün bulunamadı.", show_alert=True)
+
     elif data.startswith("approve_") or data.startswith("reject_") or data.startswith("skip_") or data.startswith("stop_job_"):
         parts = data.split("_", 1)
         action = parts[0]
@@ -481,12 +582,15 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             unique_id = parts[1]
         
-        if unique_id in _pending_events:
-            event = _pending_events[unique_id]
-            with _pending_lock:
+        event = None
+        with _pending_lock:
+            if unique_id in _pending_events:
+                event = _pending_events[unique_id]
                 _pending_status[unique_id] = action
-            
+        
+        if event:
             event.set()
+            # ... rest of the status message logic ...
             
             if action == "approve":
                 conf_msg = "✅ *Onaylandı:* Yükleniyor..."
@@ -640,17 +744,44 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         save_roblox_config(cfg)
         await update.message.reply_text(f"✅ Fiyat `{price}` Robux olarak ayarlandı.", reply_markup=settings_keyboard(), parse_mode="Markdown")
 
-    elif awaiting == "group":
-        ctx.user_data["awaiting"] = None
-        try:
-            gid = int(text)
-        except ValueError:
-            await update.message.reply_text("❌ Geçersiz ID. Sadece rakam gir.", reply_markup=settings_keyboard())
-            return
-        cfg = load_roblox_config()
-        cfg["GROUP_ID"] = gid
-        save_roblox_config(cfg)
-        await update.message.reply_text(f"✅ Grup ID `{gid}` olarak ayarlandı.", reply_markup=settings_keyboard(), parse_mode="Markdown")
+    elif awaiting and awaiting.startswith("edit_"):
+        # awaiting format: edit_[kind]_[unique_id]
+        parts = awaiting.split("_", 2)
+        if len(parts) >= 3:
+            kind = parts[1]
+            unique_id = parts[2]
+            
+            Logger.info(f"DEBUG ON_TEXT: awaiting='{awaiting}' kind='{kind}' unique_id='{unique_id}'")
+            
+            ctx.user_data["awaiting"] = None
+            with _pending_lock:
+                Logger.info(f"DEBUG ON_TEXT: Pending keys: {list(_pending_items.keys())}")
+                found_id = unique_id if unique_id in _pending_items else None
+                if not found_id:
+                    for k in _pending_items.keys():
+                        if unique_id in k or k in unique_id:
+                            found_id = k; break
+                
+                if found_id:
+                    Logger.info(f"DEBUG ON_TEXT: Found match ID='{found_id}'")
+                    field_map = {
+                        "s_name": "shirt_name", "s_desc": "shirt_desc",
+                        "p_name": "pants_name", "p_desc": "pants_desc",
+                        "name": "name", "desc": "desc"
+                    }
+                    meta_key = field_map.get(kind, kind)
+                    _pending_items[found_id]["metadata"][meta_key] = text
+                    
+                    _pending_status[found_id] = "edit"
+                    event = _pending_events.get(found_id)
+                    if event: event.set()
+                    await update.message.reply_text(f"✅ Güncellendi: {meta_key}. Önizleme yenileniyor...", reply_markup=main_menu_keyboard())
+                else:
+                    Logger.warning(f"DEBUG ON_TEXT: NO MATCH found for '{unique_id}'")
+                    await update.message.reply_text("⚠️ Ürün bulunamadı veya oturum süresi doldu.", reply_markup=main_menu_keyboard())
+        else:
+            ctx.user_data["awaiting"] = None
+            await update.message.reply_text("❌ Düzenleme verisi bozuk.", reply_markup=main_menu_keyboard())
 
     elif awaiting == "pairs":
         ctx.user_data["awaiting"] = None
@@ -672,9 +803,8 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["awaiting"] = None
         cookie_val = text.strip()
         if not cookie_val.startswith("_|WARNING:-DO-NOT-SHARE-THIS."):
-            await update.message.reply_text("⚠️ *Uyarı:* Girdiğin değer normal bir Roblox Cookie'sine benzemiyor. Genelde `_|WARNING:-DO-NOT-SHARE-THIS.` ile başlar. Yine de kaydediyorum.", parse_mode="Markdown")
+            await update.message.reply_text("⚠️ *Uyarı:* Girdiğin değer normal bir Roblox Cookie'sine benzemiyor.", parse_mode="Markdown")
         
-        # Save to Firebase AND local file
         db_manager.save_cookie(cookie_val)
         with open("cookie.txt", "w", encoding="utf-8") as f:
             f.write(cookie_val)
@@ -776,7 +906,7 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
             items_found = 0
 
             if pair_mode == "pair":
-                pants_pool = await roblox.search_and_get_assets(keyword, count=40, asset_type=12)
+                pants_pool = await roblox.search_and_get_assets(keyword, limit=40, asset_type=12)
                 used_pants_ids = set()
 
                 async for asset_id, item_url, creator, current_item_name in roblox.search_and_yield_assets(keyword):
@@ -807,11 +937,14 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
 
                     items_found += 1
                     _job_info["pairs_done"] = items_found
-                    await send(f"✅ *{keyword.title()}* için {items_found}. çift bulundu!")
+                    await send(f"✅ *{md_escape(keyword.title())}* için {items_found}. çift bulundu!")
 
                     shirt_path = await download_and_design(asset_id, keyword, "shirt", downloader, designer)
                     pants_path = await download_and_design(pants_id, keyword, "pants", downloader, designer)
-                    if not shirt_path or not pants_path: continue
+                    if not shirt_path or not pants_path:
+                        items_found -= 1
+                        _job_info["pairs_done"] = items_found
+                        continue
 
                     shirt_name, shirt_desc = generate_metadata(keyword, "shirt")
                     pants_name, pants_desc = generate_metadata(keyword, "pants")
@@ -820,55 +953,125 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                     if require_approval:
                         unique_id = f"{asset_id}_pair"
                         event = asyncio.Event()
+                        _meta = {
+                            "shirt_name": shirt_name, "shirt_desc": shirt_desc,
+                            "pants_name": pants_name, "pants_desc": pants_desc
+                        }
                         with _pending_lock:
                             _pending_events[unique_id] = event
-                            _pending_items[unique_id] = {"shirt_path": shirt_path, "pants_path": pants_path, "shirt_id": asset_id, "pants_id": pants_id}
+                            _pending_items[unique_id] = {
+                                "shirt_path": shirt_path, "pants_path": pants_path, 
+                                "shirt_id": asset_id, "pants_id": pants_id,
+                                "metadata": _meta,
+                                "history": context.user_data.get(f"last_pair_{keyword}")
+                            }
                         
-                        # Çift modda iki resmi bir grup olarak gönderip altına onay mesajı atıyoruz
+                        # Preview Images
                         from telegram import InputMediaPhoto
                         try:
-                            # We open files synchronously but send asynchronously
                             with open(shirt_path, "rb") as s_img, open(pants_path, "rb") as p_img:
                                 await update.message.reply_media_group([
-                                    InputMediaPhoto(s_img, caption=f"👕 *Shirt:* {shirt_name}"),
-                                    InputMediaPhoto(p_img, caption=f"👖 *Pants:* {pants_name}")
+                                    InputMediaPhoto(s_img, caption=f"👕 *Shirt*"),
+                                    InputMediaPhoto(p_img, caption=f"👖 *Pants*")
                                 ])
                         except Exception as e:
-                            Logger.error(f"Önizleme (Media Group) hatası: {e}")
+                            Logger.error(f"Önizleme hatası: {e}")
 
-                        dup_warn = "⚠️ *DİKKAT: Bu çift daha önce yüklendi!*\n\n" if is_duplicate else ""
-                        await send(
-                            f"{dup_warn}⏳ *Yukarıdaki {items_found}. Çift İçin Onay Bekleniyor*\n\n"
-                            f"👕 S: `{shirt_name}`\n"
-                            f"👖 P: `{pants_name}`\n\n"
-                            f"📜 *Shirt Açıklama:*\n`{shirt_desc}`\n\n"
-                            f"📜 *Pants Açıklama:*\n`{pants_desc}`\n\n"
-                            f"Yüklensin mi?",
-                            reply_markup=InlineKeyboardMarkup([
-                                [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}")],
-                                [InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}"),
-                                 InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}")],
-                                [InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
-                            ])
-                        )
-                        
-                        try:
-                            await asyncio.wait_for(event.wait(), timeout=360)
+                        preview_msg = None
+                        while not _job_stop.is_set():
                             with _pending_lock:
-                                status = _pending_status.pop(unique_id, "skip")
-                                _pending_events.pop(unique_id, None)
-                                item_data = _pending_items.pop(unique_id, None)
+                                m = _pending_items[unique_id]["metadata"]
+                                has_hist = bool(_pending_items[unique_id]["history"] or context.user_data.get(f"last_pair_{keyword}"))
+
+                            dup_warn = "⚠️ *DİKKAT: Bu çift daha önce yüklendi!*\n\n" if is_duplicate else ""
+                            caption = (
+                                f"{dup_warn}⏳ *{items_found}. Çift Onay Bekliyor*\n\n"
+                                f"👕 S: `{md_escape(m['shirt_name'])}`\n"
+                                f"👖 P: `{md_escape(m['pants_name'])}`\n\n"
+                                f"📜 *Shirt Açıklama:*\n`{md_escape(m['shirt_desc'])}`\n\n"
+                                f"📜 *Pants Açıklama:*\n`{md_escape(m['pants_desc'])}`\n\n"
+                                f"Yüklensin mi?"
+                            )
+                            kb_buttons = [
+                                [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
+                                 InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}")],
+                                [InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
+                                [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")]
+                            ]
+                            if has_hist:
+                                kb_buttons.append([InlineKeyboardButton("⬅️ Geri Dön (Set)", callback_data=f"back_{unique_id}")])
                             
-                            if status == "approve" and item_data:
-                                do_upload = True
-                            elif status == "stop":
-                                _job_stop.set(); do_upload = False; break
-                            elif status == "skip":
-                                items_found -= 1; do_upload = False; continue # Slotu boş bırakma, yenisini bul
-                            else: # status == "reject"
-                                do_upload = False; continue # Slotu boş say, sıradakine geç (items_found zaten artmıştı)
-                        except asyncio.TimeoutError:
-                            items_found -= 1; do_upload = False; continue
+                            kb_buttons.append([InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")])
+                            
+                            kb = InlineKeyboardMarkup(kb_buttons)
+
+                            if not preview_msg:
+                                preview_msg = await send(caption, reply_markup=kb)
+                            else:
+                                try: await preview_msg.edit_text(caption, reply_markup=kb, parse_mode="Markdown")
+                                except: pass
+
+                            try:
+                                await asyncio.wait_for(event.wait(), timeout=600)
+                                with _pending_lock:
+                                    status = _pending_status.pop(unique_id, "skip")
+                                    event.clear()
+                                
+                                if status == "edit": continue
+                                elif status == "back":
+                                    with _pending_lock: prev = _pending_items[unique_id].get("history")
+                                    if prev:
+                                        curr_data = {
+                                            "shirt_path": shirt_path, "pants_path": pants_path, 
+                                            "shirt_id": asset_id, "pants_id": pants_id, "metadata": _pending_items[unique_id]["metadata"]
+                                        }
+                                        asset_id, pants_id = prev["shirt_id"], prev["pants_id"]
+                                        shirt_path, pants_path = prev["shirt_path"], prev["pants_path"]
+                                        with _pending_lock:
+                                            _pending_items[unique_id].update({
+                                                "shirt_id": asset_id, "pants_id": pants_id,
+                                                "shirt_path": shirt_path, "pants_path": pants_path,
+                                                "metadata": prev["metadata"], "history": curr_data
+                                            })
+                                        await send("⬅️ *Önceki çift geri yüklendi.*")
+                                        # Reset preview_msg so it re-sends photos
+                                        preview_msg = None
+                                        
+                                        # Re-send media group
+                                        try:
+                                            with open(shirt_path, "rb") as s_img, open(pants_path, "rb") as p_img:
+                                                await update.message.reply_media_group([
+                                                    InputMediaPhoto(s_img, caption=f"👕 *Shirt* (Geri Yüklendi)"),
+                                                    InputMediaPhoto(p_img, caption=f"👖 *Pants* (Geri Yüklendi)")
+                                                ])
+                                        except Exception as e:
+                                            Logger.error(f"Geri yükleme görsel hatası: {e}")
+                                        continue
+                                    else:
+                                        await send("⚠️ Geri dönecek ürün bulunamadı."); continue
+                                elif status == "approve":
+                                    with _pending_lock:
+                                        context.user_data[f"last_pair_{keyword}"] = _pending_items[unique_id]
+                                        _pending_items.pop(unique_id, None); _pending_events.pop(unique_id, None)
+                                    do_upload = True; break
+                                elif status == "stop":
+                                    with _pending_lock: _pending_items.pop(unique_id, None); _pending_events.pop(unique_id, None)
+                                    _job_stop.set(); do_upload = False; break
+                                elif status == "skip":
+                                    with _pending_lock:
+                                        context.user_data[f"last_pair_{keyword}"] = _pending_items[unique_id]
+                                        _pending_items.pop(unique_id, None); _pending_events.pop(unique_id, None)
+                                    items_found -= 1; do_upload = False; break
+                                else: # reject
+                                    with _pending_lock:
+                                        context.user_data[f"last_pair_{keyword}"] = _pending_items[unique_id]
+                                        _pending_items.pop(unique_id, None); _pending_events.pop(unique_id, None)
+                                    do_upload = False; break
+                            except asyncio.TimeoutError:
+                                with _pending_lock: _pending_items.pop(unique_id, None); _pending_events.pop(unique_id, None)
+                                items_found -= 1; do_upload = False; break
+                        
+                        if not do_upload: continue
 
                     if do_upload and uploader:
                         await send("☁️ Yükleniyor…")
@@ -881,17 +1084,16 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                 async for asset_id, item_url, creator, current_item_name in roblox.search_and_yield_assets(keyword, asset_type=single_type):
                     if _job_stop.is_set() or items_found >= target_pairs: break
                     
-                    # ── Duplicate Check ──
                     is_duplicate = db_manager.is_item_uploaded(asset_id)
-                    if is_duplicate:
-                        Logger.warn(f"Bu item ({asset_id}) daha önce yüklendi! Kullanıcıya sorulacak.")
-
                     items_found += 1
                     _job_info["pairs_done"] = items_found
                     
-                    await send(f"✅ *{keyword.title()}* için {items_found}. {type_name} bulundu!")
+                    await send(f"✅ *{md_escape(keyword.title())}* için {items_found}. {type_name} bulundu!")
                     out_path = await download_and_design(asset_id, keyword, type_name, downloader, designer)
-                    if not out_path: continue
+                    if not out_path:
+                        items_found -= 1
+                        _job_info["pairs_done"] = items_found
+                        continue
 
                     name, desc = generate_metadata(keyword, type_name, use_suffix=False)
                     
@@ -899,55 +1101,130 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                     if require_approval:
                         unique_id = f"{asset_id}_{single_type}"
                         event = asyncio.Event()
+                        
+                        _meta = {"name": name, "desc": desc}
                         with _pending_lock:
                             _pending_events[unique_id] = event
-                            _pending_items[unique_id] = {"asset_path": out_path, "asset_id": asset_id}
-
-                        # Single modda resmin altına butonları koyabiliyoruz
+                            _pending_items[unique_id] = {
+                                "path": out_path, "asset_id": asset_id, "type": type_name,
+                                "metadata": _meta,
+                                "history": context.user_data.get(f"last_item_{keyword}_{single_type}")
+                            }
+                        
+                        # Send initial preview
+                        dup_warn = "⚠️ *DİKKAT: Bu ürün daha önce yüklendi!*\n\n" if is_duplicate else ""
+                        caption = (
+                            f"{dup_warn}⏳ *{items_found}. {type_name.title()} Onay Bekliyor*\n\n"
+                            f"📝 Ad: `{md_escape(_meta['name'])}`\n"
+                            f"📜 Açıklama: `{md_escape(_meta['desc'])}`\n\n"
+                            f"Yüklensin mi?"
+                        )
+                        
+                        preview_msg = None
                         try:
-                            dup_warn = "⚠️ *DİKKAT: Bu ürün daha önce yüklendi!*\n\n" if is_duplicate else ""
-                            with open(out_path, "rb") as f:
-                                await update.message.reply_photo(
-                                    photo=f,
-                                    caption=f"{dup_warn}⏳ *İtem {items_found} Onay Bekliyor*\n\n"
-                                            f"👔 Tip: `{type_name.title()}`\n"
-                                            f"📝 Ad: `{name}`\n"
-                                            f"📜 Açıklama: `{desc}`\n\n"
-                                            f"Yüklensin mi?",
+                            with open(out_path, "rb") as f_img:
+                                preview_msg = await update.message.reply_photo(
+                                    photo=f_img, caption=caption, 
                                     reply_markup=InlineKeyboardMarkup([
-                                        [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}")],
-                                        [InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}"),
-                                         InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}")],
-                                        [InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
+                                        [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
+                                         InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
+                                        [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_{unique_id}")] +
+                                        ([InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"back_{unique_id}")] if _pending_items[unique_id]["history"] else []),
+                                        [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
+                                         InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
                                     ]),
                                     parse_mode="Markdown"
                                 )
                         except Exception as e:
-                            Logger.error(f"Önizleme (Photo) hatası: {e}")
-                            await send("⚠️ Önizleme gönderilemedi ama onay bekleniyor...", reply_markup=InlineKeyboardMarkup([
-                                        [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}")],
-                                        [InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}"),
-                                         InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}")],
-                                        [InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
-                                    ]))
+                            preview_msg = await send(f"⚠️ Önizleme hatası: {e}\n\n{caption}", reply_markup=InlineKeyboardMarkup([
+                                [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
+                                 InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
+                                [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_{unique_id}")],
+                                [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
+                                 InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
+                            ]))
+
+                        while not _job_stop.is_set():
+                            try:
+                                Logger.info(f"⏳ Waiting for approval event: {unique_id}")
+                                await asyncio.wait_for(event.wait(), timeout=360)
+                                with _pending_lock:
+                                    status = _pending_status.pop(unique_id, "skip")
+                                    event.clear()
+                                Logger.info(f"🛎 Status received: {status} for {unique_id}")
+
+                                if status == "edit" or status == "back":
+                                    if status == "back":
+                                        with _pending_lock:
+                                            prev = _pending_items[unique_id].get("history")
+                                        if prev:
+                                            curr_data = {"path": out_path, "asset_id": asset_id, "metadata": _pending_items[unique_id]["metadata"]}
+                                            # Restore previous
+                                            asset_id, out_path = prev["asset_id"], prev["path"]
+                                            with _pending_lock:
+                                                _pending_items[unique_id].update({
+                                                    "asset_id": asset_id, "path": out_path, 
+                                                    "metadata": prev["metadata"], "history": curr_data
+                                                })
+                                            await send("⬅️ *Önceki ürün geri yüklendi.*")
+                                        else:
+                                            await send("⚠️ Geri dönecek ürün bulunamadı."); continue
+                                    
+                                    # Update UI
+                                    with _pending_lock:
+                                        m = _pending_items[unique_id]["metadata"]
+                                        has_hist = bool(_pending_items[unique_id].get("history") or context.user_data.get(f"last_item_{keyword}_{single_type}"))
+                                    
+                                    caption = (
+                                        f"{dup_warn}⏳ *{items_found}. {type_name.title()} Onay Bekliyor*\n\n"
+                                        f"📝 Ad: `{md_escape(m['name'])}`\n"
+                                        f"📜 Açıklama: `{md_escape(m['desc'])}`\n\n"
+                                        f"Yüklensin mi?"
+                                    )
+                                    kb = InlineKeyboardMarkup([
+                                        [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
+                                         InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
+                                        [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_{unique_id}")] +
+                                        ([InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"back_{unique_id}")] if has_hist else []),
+                                        [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
+                                         InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
+                                    ])
+                                    
+                                    try:
+                                        if status == "back" and preview_msg: # If item changed, edit media
+                                            from telegram import InputMediaPhoto
+                                            with open(out_path, "rb") as f_img:
+                                                await preview_msg.edit_media(InputMediaPhoto(f_img, caption=caption, parse_mode="Markdown"), reply_markup=kb)
+                                        elif preview_msg:
+                                            await preview_msg.edit_caption(caption, reply_markup=kb, parse_mode="Markdown")
+                                    except Exception as e:
+                                        Logger.error(f"UI Update error: {e}")
+                                    continue
+
+
+                                elif status == "approve":
+                                    with _pending_lock:
+                                        context.user_data[f"last_item_{keyword}_{single_type}"] = _pending_items[unique_id]
+                                        _pending_items.pop(unique_id, None); _pending_events.pop(unique_id, None)
+                                    do_upload = True; break
+                                elif status == "stop":
+                                    with _pending_lock: _pending_items.pop(unique_id, None); _pending_events.pop(unique_id, None)
+                                    _job_stop.set(); do_upload = False; break
+                                elif status == "skip":
+                                    with _pending_lock:
+                                        context.user_data[f"last_item_{keyword}_{single_type}"] = _pending_items[unique_id]
+                                        _pending_items.pop(unique_id, None); _pending_events.pop(unique_id, None)
+                                    items_found -= 1; do_upload = False; break
+                                else: # reject
+                                    with _pending_lock:
+                                        context.user_data[f"last_item_{keyword}_{single_type}"] = _pending_items[unique_id]
+                                        _pending_items.pop(unique_id, None); _pending_events.pop(unique_id, None)
+                                    do_upload = False; break
+                            except asyncio.TimeoutError:
+                                with _pending_lock: _pending_items.pop(unique_id, None); _pending_events.pop(unique_id, None)
+                                items_found -= 1; do_upload = False; break
                         
-                        try:
-                            await asyncio.wait_for(event.wait(), timeout=360)
-                            with _pending_lock:
-                                status = _pending_status.pop(unique_id, "skip")
-                                _pending_events.pop(unique_id, None)
-                                item_data = _pending_items.pop(unique_id, None)
-                            
-                            if status == "approve" and item_data:
-                                do_upload = True
-                            elif status == "stop":
-                                _job_stop.set(); await send("🛑 *İş sonlandırıldı.*", reply_markup=back_keyboard()); do_upload = False; break
-                            elif status == "skip":
-                                items_found -= 1; do_upload = False; continue # Slotu boş bırakma, yenisini bul
-                            else: # status == "reject"
-                                do_upload = False; continue # Slotu boş say, sıradakine geç
-                        except asyncio.TimeoutError:
-                            items_found -= 1; await send(f"❌ Onay zaman aşımı, atlandı."); do_upload = False; continue
+                        if not do_upload: continue
 
                     if do_upload and uploader:
                         await send("☁️ Yükleniyor…")
@@ -1103,7 +1380,7 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
         await send(f"🏁 İş tamamlandı! Toplam {finish_label}: `{upload_count}`", reply_markup=back_keyboard())
     except Exception as e:
         Logger.error(f"İŞ SIRASINDA KRİTİK HATA: {e}")
-        await send(f"⚠️ Kritik Hata: {e}")
+        await send(f"⚠️ Kritik Hata: {md_escape(str(e))}")
     finally:
         _job_info["status"] = "idle"
         _job_stop.clear()

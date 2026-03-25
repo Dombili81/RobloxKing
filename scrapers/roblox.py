@@ -65,7 +65,7 @@ class RobloxScraper:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.stop()
 
-    async def search_and_get_assets(self, keyword, count=5, asset_type=11):
+    async def search_and_get_assets(self, keyword, limit=5, asset_type=11):
         asset_name = "Shirt" if asset_type == 11 else "Pants" if asset_type == 12 else f"Accessory_{asset_type}"
         category = 3 if asset_type in (11, 12, 2) else 11
         Logger.search(f"Marketplace taranıyor: {keyword} ({asset_name})")
@@ -87,19 +87,28 @@ class RobloxScraper:
         }
         subcategory = subcat_map.get(asset_type) if category == 11 else None
 
+        url = "https://catalog.roblox.com/v2/search/items/details"
+        
+        TAXONOMY_MAP = {
+            11: "2a2rf9qyeTd8W5iegK2Prc", # Classic Shirts
+            12: "49cFNAJWuwiJJVUSADG6DR", # Classic Pants
+        }
+        taxonomy = TAXONOMY_MAP.get(asset_type)
+        
         for page in range(4):
             params = {
                 "keyword": keyword,
-                "category": category,
                 "limit": 30,
                 "cursor": cursor,
-                "sortType": self.sort_type,
-                "sortAggregation": self.sort_agg,
+                "salesTypeFilter": 1 # Only available items
             }
-            if category == 11 and subcategory:
-                params["subcategory"] = subcategory
-            else:
-                params["assetTypes"] = asset_type
+            if taxonomy:
+                params["taxonomy"] = taxonomy
+            
+            # For Relevance (0), we omit sortType entirely to match Roblox's behavior
+            if self.sort_type != 0:
+                params["sortType"] = self.sort_type
+                params["sortAggregation"] = self.sort_agg
                 
             try:
                 response = self._request_with_retry("GET", url, params=params, timeout=10)
@@ -113,6 +122,16 @@ class RobloxScraper:
                     for item in listings:
                         if item.get("id"):
                             asset_id = str(item.get("id"))
+                            # Natively filter out 3D layered clothing (Jacket/Boots/etc) that lack 2D templates
+                            # Hard length check: Classic 2D assets are < 13 digits. 3D garments are 13-15+ digits.
+                            if len(asset_id) > 12:
+                                continue
+                                
+                            # STRECH GUARD: Block 3D Accessories (Type 8) even if ID is short
+                            returned_asset_type = item.get("assetType")
+                            if returned_asset_type and int(returned_asset_type) != asset_type:
+                                continue
+                                
                             # Avoid duplicates
                             if any(a[0] == asset_id for a in found_assets):
                                 continue
@@ -149,30 +168,28 @@ class RobloxScraper:
         Logger.search(f"{keyword} için stream başlatıldı ({asset_name})")
         
         cursor = ""
-        url = "https://catalog.roblox.com/v1/search/items/details"
+        url = "https://catalog.roblox.com/v2/search/items/details"
         seen_ids = set()
 
-        # All accessories: search entire catalog by keyword only (subcategory filter broken for Hat/Hair)
+        TAXONOMY_MAP = {
+            11: "2a2rf9qyeTd8W5iegK2Prc", # Classic Shirts
+            12: "49cFNAJWuwiJJVUSADG6DR", # Classic Pants
+        }
+        taxonomy = TAXONOMY_MAP.get(asset_type)
+
         for page in range(10):
-            if is_clothing:
-                params = {
-                    "keyword": keyword,
-                    "category": 3,
-                    "assetTypes": asset_type,
-                    "limit": 30,
-                    "cursor": cursor,
-                    "sortType": self.sort_type,
-                    "sortAggregation": self.sort_agg,
-                }
-            else:
-                # Accessories — no category/subcategory, search whole catalog by keyword
-                params = {
-                    "keyword": keyword,
-                    "limit": 30,
-                    "cursor": cursor,
-                    "sortType": self.sort_type,
-                    "sortAggregation": self.sort_agg,
-                }
+            params = {
+                "keyword": keyword,
+                "limit": 30,
+                "cursor": cursor,
+                "salesTypeFilter": 1
+            }
+            if taxonomy:
+                params["taxonomy"] = taxonomy
+            
+            if self.sort_type != 0:
+                params["sortType"] = self.sort_type
+                params["sortAggregation"] = self.sort_agg
                 
             try:
                 response = self._request_with_retry("GET", url, params=params, timeout=10)
@@ -186,6 +203,17 @@ class RobloxScraper:
                     for item in listings:
                         if item.get("id"):
                             asset_id = str(item.get("id"))
+                            
+                            # Hard guard for 2D vs 3D assets: 10-12 digits = Classic, 13+ = 3D Layered/Accesory
+                            if len(asset_id) > 12:
+                                continue
+                                
+                            # STRECH GUARD: Even 11-digit items like 'Fat Cat Costume' can be 3D Accessories (Type 8)
+                            # instead of Classic Shirts (Type 11). We MUST verify the type if provided.
+                            returned_asset_type = item.get("assetType")
+                            if returned_asset_type and int(returned_asset_type) != asset_type:
+                                continue
+                                
                             if asset_id in seen_ids:
                                 continue
                             seen_ids.add(asset_id)
@@ -277,14 +305,19 @@ class RobloxScraper:
                             name = item.get("name", f"Pants_{linked_id}")
                             name_l = name.lower()
                             # Hem asset tipini kontrol et, hem de isim içinde keyword geçsin
-                            if asset_type == 12 and (not keyword_l or keyword_l in name_l):
+                            try:
+                                is_pants = int(asset_type) == 12
+                            except:
+                                is_pants = False
+
+                            if is_pants and (not keyword_l or keyword_l in name_l):
                                 url = f"https://www.roblox.com/catalog/{linked_id}/"
                                 Logger.success(f"Eşleşen Pants bulundu: {name}")
                                 pants_assets.append((linked_id, url))
                             else:
-                                print(f"  [PairedPants] Ignored. AssetType is {asset_type} (not 12).")
-                    else:
-                        print(f"  [PairedPants] Verification failed. Status {r2.status_code}")
+                                Logger.debug(f"[PairedPants] Atlandı. Tip: {asset_type} (Gereken: 12), İsim: {name}")
+                        else:
+                            Logger.debug(f"[PairedPants] Doğrulama başarısız. Status {r2.status_code}")
                 else:
                     # Fallback
                     time.sleep(1.5)
@@ -294,9 +327,15 @@ class RobloxScraper:
                         asset_type = item.get("AssetTypeId")
                         name = item.get("Name", f"Pants_{linked_id}")
                         name_l = name.lower()
-                        if asset_type == 12 and (not keyword_l or keyword_l in name_l):
+                        
+                        try:
+                            is_pants = int(asset_type) == 12
+                        except:
+                            is_pants = False
+                            
+                        if is_pants and (not keyword_l or keyword_l in name_l):
                             url = f"https://www.roblox.com/catalog/{linked_id}/"
-                            print(f"[PairedPants] SUCCESS: Matched Classic Pants: {name}")
+                            Logger.success(f"Eşleşen Pants bulundu (Yedek): {name}")
                             pants_assets.append((linked_id, url))
             except Exception as e:
                 print(f"[PairedPants] Error checking linked asset {linked_id}: {e}")
