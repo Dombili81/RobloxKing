@@ -49,7 +49,12 @@ class Logger:
         pass
 
 def md_escape(text: str) -> str:
-    """Telegram Markdown V1 için özel karakterleri escape et."""
+    """Telegram Markdown V1 için özel karakterleri escape et. [+] ve [-] etiketlerini koru."""
+    # Önce genel escape yap
     for ch in ['*', '_', '`', '[', ']']:
         text = text.replace(ch, '\\' + ch)
+    
+    # Karışan [+] ve [-] etiketlerini geri düzelt
+    text = text.replace('\\[+\\]', '[+]')
+    text = text.replace('\\[-\\]', '[-]')
     return text

@@ -196,6 +196,8 @@ def main_menu_keyboard():
          InlineKeyboardButton("📊  Durum",       callback_data="status")],
         [InlineKeyboardButton("⚙️  Ayarlar",     callback_data="settings"),
          InlineKeyboardButton("📈  Satışlar",    callback_data="finance")],
+        [InlineKeyboardButton("🔥  Popüler Keywordler", callback_data="popular_keywords"),
+         InlineKeyboardButton("💡  Öneriler", callback_data="trends_suggestions")],
         [InlineKeyboardButton("🛑  Durdur",      callback_data="stop"),
          InlineKeyboardButton("❓  Yardım",      callback_data="help")],
     ])
@@ -301,6 +303,245 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(WELCOME, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
         return ConversationHandler.END
 
+    # ── Popüler Keywordler ──
+    elif data == "popular_keywords":
+        # Show category selection menu
+        kb = [
+            [InlineKeyboardButton("👕 Classic (Shirt/Pants)", callback_data="popular_classic"),
+             InlineKeyboardButton("🎩 UGC (3D Aksesuar)", callback_data="popular_ugc")],
+            [InlineKeyboardButton("⬅️ Ana Menü", callback_data="main")]
+        ]
+        await q.edit_message_text(
+            "🔥 *Popüler Keywordler*\n\nHangi kategori için analiz yapılsın?",
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"
+        )
+
+    elif data in ("popular_classic", "popular_ugc"):
+        is_ugc = (data == "popular_ugc")
+        label = "🎩 UGC (3D Aksesuar)" if is_ugc else "👕 Classic (Shirt/Pants)"
+        await q.edit_message_text(f"⏳ *{label}* için geçen haftanın en çok satanları analiz ediliyor...", parse_mode="Markdown")
+
+        try:
+            import requests, re
+            from collections import Counter
+
+            STOP_WORDS = {
+                "shirt", "pants", "pant", "top", "bottom", "clothing", "clothes",
+                "classic", "roblox", "outfit", "set", "pack", "bundle", "style",
+                "new", "best", "cool", "the", "and", "for", "with", "boy", "girl",
+                "men", "women", "man", "woman", "kids", "teen", "aesthetic",
+                "plus", "size", "only", "ver", "version", "hat", "hair", "face",
+                "ugc", "item", "acc", "accessory", "limited", "series"
+            }
+
+            def extract_keywords(names):
+                word_counter = Counter()
+                for name in names:
+                    clean = re.sub(r'[^\w\s]', ' ', name.lower())
+                    clean = re.sub(r'[^\x00-\x7F]+', ' ', clean)
+                    for word in clean.split():
+                        if len(word) >= 3 and word not in STOP_WORDS and not word.isdigit():
+                            word_counter[word] += 1
+                return word_counter
+
+            def fetch_names(cookie, ugc_mode):
+                sess = requests.Session()
+                sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+                if cookie:
+                    sess.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
+
+                all_names = []
+                try:
+                    if ugc_mode:
+                        # v1 catalog API: category=11 = Accessories, sortType=2 Best Selling, sortAggregation=3 Past Week
+                        url_v1 = "https://catalog.roblox.com/v1/search/items"
+                        params = {
+                            "category": 11,
+                            "sortType": 2,
+                            "sortAggregation": 3,
+                            "limit": 30,
+                            "salesTypeFilter": 1,
+                        }
+                        r = sess.get(url_v1, params=params, timeout=12)
+                        Logger.info(f"UGC v1 API status={r.status_code}")
+                        if r.status_code == 200:
+                            item_ids = [it["id"] for it in r.json().get("data", []) if "id" in it]
+                            Logger.info(f"UGC: got {len(item_ids)} IDs, fetching names...")
+                            if item_ids:
+                                # Use v1 search/items/details GET (no CSRF required, returns names)
+                                detail_url = "https://catalog.roblox.com/v1/search/items/details"
+                                for uid in item_ids[:30]:
+                                    dr = sess.get(
+                                        f"https://catalog.roblox.com/v1/assets/{uid}/details",
+                                        timeout=8
+                                    )
+                                    if dr.status_code == 200:
+                                        n = dr.json().get("Name", "")
+                                        if n: all_names.append(n)
+                        else:
+                            Logger.warn(f"UGC v1 API failed: {r.status_code} {r.text[:200]}")
+                    else:
+                        # Classic clothing: v2 API with taxonomy IDs
+                        url_v2 = "https://catalog.roblox.com/v2/search/items/details"
+                        for taxonomy in ["2a2rf9qyeTd8W5iegK2Prc", "49cFNAJWuwiJJVUSADG6DR"]:
+                            params = {"taxonomy": taxonomy, "sortType": 2, "sortAggregation": 3, "limit": 30, "salesTypeFilter": 1}
+                            r = sess.get(url_v2, params=params, timeout=12)
+                            if r.status_code == 200:
+                                for item in r.json().get("data", []):
+                                    n = item.get("name", "")
+                                    if n: all_names.append(n)
+                except Exception as ex:
+                    Logger.error(f"fetch_names error: {ex}")
+                return all_names
+
+            cookie = load_cookie()
+            all_names = await asyncio.to_thread(fetch_names, cookie, is_ugc)
+
+            if not all_names:
+                await q.edit_message_text(
+                    "❌ Roblox'tan veri alınamadı.\n\n_Cookie ayarlı ve geçerli olduğundan emin ol._",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Geri", callback_data="popular_keywords")]]),
+                    parse_mode="Markdown"
+                )
+                return
+
+            word_counts = extract_keywords(all_names)
+            top_keywords = [kw for kw, _ in word_counts.most_common(24) if len(kw) >= 3]
+
+            kb_rows = []
+            for i in range(0, len(top_keywords), 2):
+                row = [InlineKeyboardButton(f"🔍 {top_keywords[i]}", callback_data=f"run_kw_{top_keywords[i]}")]
+                if i + 1 < len(top_keywords):
+                    row.append(InlineKeyboardButton(f"🔍 {top_keywords[i+1]}", callback_data=f"run_kw_{top_keywords[i+1]}"))
+                kb_rows.append(row)
+            kb_rows.append([
+                InlineKeyboardButton("↩️ Yenile", callback_data=data),
+                InlineKeyboardButton("⬅️ Kategoriler", callback_data="popular_keywords")
+            ])
+
+            await q.edit_message_text(
+                f"🔥 *{label} — Geçen Hafta En Çok Satanlar*\n\n"
+                f"Analiz edilen ürün: `{len(all_names)}`\n"
+                "Bir keyword'e tıkla, iş hemen başlasın:\n",
+                reply_markup=InlineKeyboardMarkup(kb_rows),
+                parse_mode="Markdown"
+            )
+
+        except Exception as e:
+            Logger.error(f"Popular keywords error: {e}")
+            await q.edit_message_text(f"❌ Hata: `{md_escape(str(e))}`", reply_markup=back_keyboard(), parse_mode="Markdown")
+
+    # ── Öneriler / Trendler ──
+    elif data == "trends_suggestions":
+        await q.edit_message_text("💡 *Öneriler yükleniyor...*\n\nGündem analiz ediliyor, Roblox'a uygun içerikler filtreleniyor...", parse_mode="Markdown")
+        try:
+            import requests, re, xml.etree.ElementTree as ET
+
+            # Keywords that suggest Roblox-relevant content (anime, games, characters, shows)
+            ROBLOX_RELEVANT = {
+                "anime", "manga", "naruto", "dragon", "ball", "one", "piece", "demon", "slayer",
+                "attack", "titan", "bleach", "jujutsu", "kaisen", "spy", "family", "chainsaw",
+                "pokemon", "minecraft", "fortnite", "roblox", "goku", "luffy", "nezuko",
+                "spiderman", "spider", "batman", "superman", "avengers", "marvel", "dc",
+                "sonic", "mario", "zelda", "zelda", "spongebob", "cartoon", "animated",
+                "season", "movie", "film", "series", "show", "episode", "trailer",
+                "game", "gaming", "character", "hero", "villain", "magic", "power",
+                "sword", "ninja", "samurai", "pirate", "dragon", "fantasy",
+            }
+            # Exclude clearly irrelevant categories
+            EXCLUDE_WORDS = {
+                "election", "president", "congress", "senate", "vote", "political", "trump", "biden",
+                "economy", "inflation", "stock", "market", "weather", "earthquake", "hurricane",
+                "shooting", "crime", "police", "court", "trial", "nfl", "nba", "mlb", "soccer",
+                "football", "basketball", "baseball", "championship", "tournament", "olympics",
+                "covid", "vaccine", "hospital", "cancer", "disease",
+            }
+
+            def fetch_trends():
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                # Google Trends daily trending topics (US)
+                url = "https://trends.google.com/trends/trendingsearches/daily/rss?geo=US"
+                r = requests.get(url, headers=headers, timeout=15)
+                Logger.info(f"Trends RSS status={r.status_code}")
+                if r.status_code != 200:
+                    return []
+
+                topics = []
+                try:
+                    # Use regex to extract titles and traffic (avoids XML namespace issues)
+                    titles = re.findall(r'<title><![CDATA[(.+?)]]></title>', r.text)
+                    traffics = re.findall(r'approxTraffic>([^<]+)<', r.text)
+                    # Skip first title (it's the channel title, not a trend)
+                    if titles and titles[0].lower().startswith("trending"):
+                        titles = titles[1:]
+                    for i, title in enumerate(titles):
+                        traffic = traffics[i] if i < len(traffics) else "?"
+                        topics.append((title.strip(), traffic.strip()))
+                    Logger.info(f"Trends parsed: {len(topics)} topics")
+                except Exception as ex:
+                    Logger.error(f"Trends parse error: {ex}")
+                return topics
+
+            def is_roblox_relevant(title):
+                tl = title.lower()
+                words = re.sub(r'[^\w\s]', ' ', tl).split()
+                # Exclude if any exclude word matches
+                for w in words:
+                    if w in EXCLUDE_WORDS: return False
+                # Include if any roblox-relevant word matches, OR if it's a proper name/character
+                for w in words:
+                    if w in ROBLOX_RELEVANT: return True
+                # Also include if title looks like a character/show name (2-3 word proper nouns)
+                proper_words = [w for w in title.split() if w and w[0].isupper()]
+                if len(proper_words) >= 1 and len(title.split()) <= 4:
+                    # Check it's not an excluded topic
+                    return True
+                return False
+
+            all_topics = await asyncio.to_thread(fetch_trends)
+            Logger.info(f"Trends: fetched {len(all_topics)} total topics")
+
+            # Filter for Roblox-relevant ones
+            relevant = [(t, tr) for t, tr in all_topics if is_roblox_relevant(t)]
+            Logger.info(f"Trends: {len(relevant)} relevant topics after filter")
+
+            if not relevant:
+                # Fallback: show all topics if filter is too strict
+                relevant = all_topics[:15]
+
+            # Build keyboard
+            kb_rows = []
+            for i in range(0, min(len(relevant), 20), 1):
+                title, traffic = relevant[i]
+                # Clean title for keyword use
+                kw = re.sub(r'[^\w\s]', '', title).strip()[:40]
+                display = f"🔍 {title[:28]} ({traffic})" if traffic != "?" else f"🔍 {title[:35]}"
+                kb_rows.append([InlineKeyboardButton(display, callback_data=f"run_kw_{kw}")])
+            kb_rows.append([
+                InlineKeyboardButton("↩️ Yenile", callback_data="trends_suggestions"),
+                InlineKeyboardButton("⬅️ Ana Menü", callback_data="main")
+            ])
+
+            await q.edit_message_text(
+                f"💡 *Gündem Önerileri* — Roblox'a Uygun Trendler\n\n"
+                f"Google Trends'ten {len(relevant)} uygun trend bulundu.\n"
+                "_Bir konuya tıkla, hemen arama başlasın:_\n",
+                reply_markup=InlineKeyboardMarkup(kb_rows),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            Logger.error(f"Trends error: {e}")
+            await q.edit_message_text(f"❌ Hata: `{md_escape(str(e))}`", reply_markup=back_keyboard(), parse_mode="Markdown")
+
+    elif data.startswith("run_kw_"):
+        # Direct keyword run from popular keywords
+        keyword = data[7:]  # strip 'run_kw_'
+        if _job_info["status"] == "running":
+            await q.edit_message_text("⚠️ Zaten bir iş çalışıyor.", reply_markup=back_keyboard())
+            return
+        await q.edit_message_text(f"🚀 *{md_escape(keyword.title())}* için iş başlatılıyor...", parse_mode="Markdown")
+        await start_job(update, ctx, [keyword])
+
     # ── Durum ──
     elif data == "status":
         info = _job_info
@@ -318,11 +559,14 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # ── Durdur ──
     elif data == "stop":
-        if _job_info["status"] != "running":
+        if _job_info["status"] != "running" or _active_task is None:
             await q.edit_message_text("ℹ️ Çalışan bir iş zaten yok.", reply_markup=back_keyboard(), parse_mode="Markdown")
         else:
             _job_stop.set()
-            await q.edit_message_text("🛑 *Durdurma sinyali gönderildi.*\nMevcut adım tamamlandıktan sonra duracak.", reply_markup=back_keyboard(), parse_mode="Markdown")
+            if _active_task and not _active_task.done():
+                _active_task.cancel()
+            _job_info["status"] = "idle"
+            await q.edit_message_text("🛑 *İş anında durduruldu.*", reply_markup=main_menu_keyboard(), parse_mode="Markdown")
 
     # ── Finans & Satışlar ──
     elif data == "finance":
@@ -473,14 +717,55 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # ── Onay callbacks ──
     elif data.startswith("edit_menu_"):
-        # edit_menu_[unique_id]
-        unique_id = data[10:] # Robustly get everything after 'edit_menu_'
-        kb_buttons = [
-            [InlineKeyboardButton("👕 Shirt", callback_data=f"edit_sel_s_{unique_id}"),
-             InlineKeyboardButton("👖 Pants", callback_data=f"edit_sel_p_{unique_id}")],
-            [InlineKeyboardButton("⬅️ Vazgeç", callback_data=f"refresh_{unique_id}")]
-        ]
-        await q.edit_message_text("✏️ *Düzenleme Menüsü*\n\nHangi ürünü düzenlemek istiyorsun?", reply_markup=InlineKeyboardMarkup(kb_buttons), parse_mode="Markdown")
+        # edit_menu_[unique_id] — detects current mode and shows the right sub-menu
+        unique_id = data[10:]
+        cfg = load_roblox_config()
+        pair_mode = cfg.get("PAIR_MODE", "pair")
+
+        if pair_mode == "pair":
+            # Pair mode: choose Shirt or Pants first
+            with _pending_lock:
+                meta = _pending_items.get(unique_id, {}).get("metadata", {})
+                s_name = meta.get("shirt_name", "")
+                p_name = meta.get("pants_name", "")
+            kb_buttons = [
+                [InlineKeyboardButton(f"👕 Shirt", callback_data=f"edit_sel_s_{unique_id}"),
+                 InlineKeyboardButton(f"👖 Pants", callback_data=f"edit_sel_p_{unique_id}")],
+                [InlineKeyboardButton("⬅️ Vazgeç", callback_data=f"refresh_{unique_id}")]
+            ]
+            msg_text = (
+                f"✏️ *Düzenleme Menüsü*\n\n"
+                f"👕 Shirt Adı: `{md_escape(s_name) or 'Boş'}`\n"
+                f"👖 Pants Adı: `{md_escape(p_name) or 'Boş'}`\n\n"
+                "Hangi ürünü düzenlemek istiyorsun?"
+            )
+            kb = InlineKeyboardMarkup(kb_buttons)
+            if q.message.caption is not None:
+                await q.edit_message_caption(msg_text, reply_markup=kb, parse_mode="Markdown")
+            else:
+                await q.edit_message_text(msg_text, reply_markup=kb, parse_mode="Markdown")
+        else:
+            # Single / UGC mode: show Name and Desc buttons directly
+            with _pending_lock:
+                meta = _pending_items.get(unique_id, {}).get("metadata", {})
+                cur_name = meta.get("name", "")
+                cur_desc = meta.get("desc", "")
+            kb_buttons = [
+                [InlineKeyboardButton("✏️ Başlığı Düzenle", callback_data=f"edit_name_{unique_id}")],
+                [InlineKeyboardButton("📜 Açıklamayı Düzenle", callback_data=f"edit_desc_{unique_id}")],
+                [InlineKeyboardButton("⬅️ Vazgeç", callback_data=f"refresh_{unique_id}")]
+            ]
+            msg_text = (
+                f"✏️ *Düzenleme Menüsü*\n\n"
+                f"📌 *Mevcut Başlık:* `{md_escape(cur_name) or 'Boş'}`\n"
+                f"📜 *Mevcut Açıklama:* `{md_escape(cur_desc[:80]) + '...' if len(cur_desc) > 80 else md_escape(cur_desc) or 'Boş'}`\n\n"
+                "Neyi değiştirmek istersin?"
+            )
+            kb = InlineKeyboardMarkup(kb_buttons)
+            if q.message.caption is not None:
+                await q.edit_message_caption(msg_text, reply_markup=kb, parse_mode="Markdown")
+            else:
+                await q.edit_message_text(msg_text, reply_markup=kb, parse_mode="Markdown")
 
     elif data.startswith("edit_sel_"):
         asset_prefix = "s" if "_sel_s_" in data else "p"
@@ -501,13 +786,17 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ]
         
         label = "Shirt" if asset_prefix == "s" else "Pants"
-        await q.edit_message_text(
+        msg_text = (
             f"✏️ *{label} Düzenleniyor*\n\n"
-            f"📌 *Mevcut Ad:* `{md_escape(name)}`\n"
-            f"📜 *Mevcut Açıklama:* `{md_escape(desc)}`\n\n"
-            f"Neyi değiştirmek istersin?",
-            reply_markup=InlineKeyboardMarkup(kb_buttons), parse_mode="Markdown"
+            f"📌 *Mevcut Ad:* `{md_escape(name) or 'Boş'}`\n"
+            f"📜 *Mevcut Açıklama:* `{md_escape(desc[:80]) + '...' if len(desc) > 80 else md_escape(desc) or 'Boş'}`\n\n"
+            "Neyi değiştirmek istersin?"
         )
+        kb = InlineKeyboardMarkup(kb_buttons)
+        if q.message.caption is not None:
+            await q.edit_message_caption(msg_text, reply_markup=kb, parse_mode="Markdown")
+        else:
+            await q.edit_message_text(msg_text, reply_markup=kb, parse_mode="Markdown")
 
     elif data.startswith("refresh_"):
         unique_id = data.replace("refresh_", "")
@@ -517,95 +806,117 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             event.set()
             await q.answer("Geri dönülüyor...")
 
-    elif data.startswith("edit_"):
-        # formats: edit_[s/p]_[name/desc]_[unique_id]
-        if "_name_" in data:
-            asset_prefix = "s" if "_s_name_" in data else "p"
-            kind = f"{asset_prefix}_name"
-            # find everything after 'name_'
-            unique_id = data.split("_name_")[-1]
-        elif "_desc_" in data:
-            asset_prefix = "s" if "_s_desc_" in data else "p"
-            kind = f"{asset_prefix}_desc"
-            unique_id = data.split("_desc_")[-1]
-        else:
+    elif data.startswith("edit_") and not data.startswith("edit_menu_") and not data.startswith("edit_sel_"):
+        # Formats:
+        #   Pair mode:   edit_s_name_{unique_id}  /  edit_s_desc_...  /  edit_p_name_...  /  edit_p_desc_...
+        #   Single mode: edit_{unique_id}  (direct, no sub-menu)
+        # We detect the kind by checking known prefixes AFTER 'edit_'
+        rest = data[5:]  # strip 'edit_'
+
+        KIND_PREFIXES = [
+            ("s_name_", "s_name"),
+            ("s_desc_", "s_desc"),
+            ("p_name_", "p_name"),
+            ("p_desc_", "p_desc"),
+            ("name_",   "name"),
+            ("desc_",   "desc"),
+        ]
+        kind = None
+        unique_id = None
+        for prefix, k in KIND_PREFIXES:
+            if rest.startswith(prefix):
+                kind = k
+                unique_id = rest[len(prefix):]
+                break
+        if kind is None:
+            # Single mode: no sub-kind, rest IS the unique_id
             kind = "name"
-            unique_id = data.replace("edit_", "")
-            
-        Logger.info(f"DEBUG CALLBACK: edit_ kind='{kind}' ID='{unique_id}'")
-        
+            unique_id = rest
+
+
+
         with _pending_lock:
-            meta = _pending_items[unique_id]["metadata"] if unique_id in _pending_items else {}
-            if kind == "s_name": current_val = meta.get("shirt_name", "")
-            elif kind == "s_desc": current_val = meta.get("shirt_desc", "")
-            elif kind == "p_name": current_val = meta.get("pants_name", "")
-            elif kind == "p_desc": current_val = meta.get("pants_desc", "")
-            else: current_val = meta.get("name", "")
-        
+            item = _pending_items.get(unique_id, {})
+            meta = item.get("metadata", {})
+            META_KEY_MAP = {
+                "s_name": "shirt_name", "s_desc": "shirt_desc",
+                "p_name": "pants_name", "p_desc": "pants_desc",
+                "name":   "name",       "desc":   "desc"
+            }
+            current_val = meta.get(META_KEY_MAP.get(kind, kind), "")
+
         ctx.user_data["awaiting"] = f"edit_{kind}_{unique_id}"
-        Logger.info(f"DEBUG: Setting awaiting to '{ctx.user_data['awaiting']}'")
         await q.answer("Düzenleme başlatıldı...")
-        
-        prompts = {
-            "s_name": "👕 Yeni Shirt Adını yazın:", "s_desc": "📜 Yeni Shirt Açıklamasını yazın:",
-            "p_name": "👖 Yeni Pants Adını yazın:", "p_desc": "📜 Yeni Pants Açıklamasını yazın:",
-            "name": "✏️ Yeni ürün adını yazın:", "desc": "📜 Yeni ürün açıklamasını yazın:"
+
+        PROMPTS = {
+            "s_name": "👕 Yeni Shirt Adını yazın:",
+            "s_desc": "📜 Yeni Shirt Açıklamasını yazın:",
+            "p_name": "👖 Yeni Pants Adını yazın:",
+            "p_desc": "📜 Yeni Pants Açıklamasını yazın:",
+            "name":   "✏️ Yeni ürün adını yazın:",
+            "desc":   "📜 Yeni ürün açıklamasını yazın:",
         }
         await q.message.reply_text(
-            f"✏️ *Mevcut Değer:*\n`{md_escape(current_val)}`\n\n"
-            f"{prompts.get(kind, 'Lütfen yeni değeri yazın:')}",
+            f"✏️ *Mevcut Değer:*\n`{md_escape(current_val) if current_val else 'Boş'}`\n\n"
+            f"{PROMPTS.get(kind, 'Lütfen yeni değeri yazın:')}",
             parse_mode="Markdown"
         )
 
     elif data.startswith("back_"):
-        unique_id = data.replace("back_", "")
-        has_item = False
+        unique_id = data[5:]  # strip 'back_'
         event = None
         with _pending_lock:
             if unique_id in _pending_items:
-                has_item = True
                 _pending_status[unique_id] = "back"
                 event = _pending_events.get(unique_id)
-        
-        if has_item:
-            if event: event.set()
-            await q.answer("Geri dönülüyor...")
+
+        if event:
+            event.set()
+            try:
+                await q.message.delete()
+            except Exception:
+                pass
+            await q.answer("⬅️ Geri dönülüyor...")
         else:
             await q.answer("⚠️ Geri dönecek ürün bulunamadı.", show_alert=True)
 
     elif data.startswith("approve_") or data.startswith("reject_") or data.startswith("skip_") or data.startswith("stop_job_"):
-        parts = data.split("_", 1)
-        action = parts[0]
-        if action == "stop" and "job" in parts[1]: # handle stop_job_XXX
+        # Parse action and unique_id
+        if data.startswith("stop_job_"):
             action = "stop"
-            unique_id = parts[1].replace("job_", "")
+            unique_id = data[9:]  # strip 'stop_job_'
         else:
-            unique_id = parts[1]
-        
+            idx = data.index("_")
+            action = data[:idx]  # 'approve', 'reject', 'skip'
+            unique_id = data[idx+1:]
+
         event = None
         with _pending_lock:
             if unique_id in _pending_events:
                 event = _pending_events[unique_id]
                 _pending_status[unique_id] = action
-        
+
         if event:
             event.set()
-            # ... rest of the status message logic ...
-            
-            if action == "approve":
-                conf_msg = "✅ *Onaylandı:* Yükleniyor..."
-            elif action == "stop":
-                conf_msg = "🛑 *Durduruldu:* İşlem sonlandırılıyor."
-            else:
-                conf_msg = "🔍 *Atlandı:* Sıradaki aranıyor..."
-
+            # Delete the preview message to keep chat clean
             try:
-                if q.message.caption:
-                    await q.edit_message_caption(conf_msg, parse_mode="Markdown")
-                else:
-                    await q.edit_message_text(conf_msg, parse_mode="Markdown")
-            except Exception as e:
-                Logger.error(f"Callback düzenleme hatası: {e}")
+                await q.message.delete()
+            except Exception:
+                # If delete fails, just remove the keyboard
+                try:
+                    await q.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+            # Confirm to user via answer popup
+            ACTION_LABELS = {
+                "approve": "✅ Onaylandı, yükleniyor...",
+                "stop":    "🛑 İşlem durduruluyor...",
+                "skip":    "🔍 Sıradaki aranayıyor...",
+                "reject":  "❌ Reddedildi.",
+            }
+            await q.answer(ACTION_LABELS.get(action, "..."))
+        else:
+            await q.answer("⚠️ Ürün bulunamadı ya da süre doldu.", show_alert=True)
 
     # ── İş Başlat ──
     elif data == "run":
@@ -745,43 +1056,62 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Fiyat `{price}` Robux olarak ayarlandı.", reply_markup=settings_keyboard(), parse_mode="Markdown")
 
     elif awaiting and awaiting.startswith("edit_"):
-        # awaiting format: edit_[kind]_[unique_id]
-        parts = awaiting.split("_", 2)
-        if len(parts) >= 3:
-            kind = parts[1]
-            unique_id = parts[2]
-            
-            Logger.info(f"DEBUG ON_TEXT: awaiting='{awaiting}' kind='{kind}' unique_id='{unique_id}'")
-            
-            ctx.user_data["awaiting"] = None
-            with _pending_lock:
-                Logger.info(f"DEBUG ON_TEXT: Pending keys: {list(_pending_items.keys())}")
-                found_id = unique_id if unique_id in _pending_items else None
-                if not found_id:
-                    for k in _pending_items.keys():
-                        if unique_id in k or k in unique_id:
-                            found_id = k; break
-                
-                if found_id:
-                    Logger.info(f"DEBUG ON_TEXT: Found match ID='{found_id}'")
-                    field_map = {
-                        "s_name": "shirt_name", "s_desc": "shirt_desc",
-                        "p_name": "pants_name", "p_desc": "pants_desc",
-                        "name": "name", "desc": "desc"
-                    }
-                    meta_key = field_map.get(kind, kind)
-                    _pending_items[found_id]["metadata"][meta_key] = text
-                    
-                    _pending_status[found_id] = "edit"
-                    event = _pending_events.get(found_id)
-                    if event: event.set()
-                    await update.message.reply_text(f"✅ Güncellendi: {meta_key}. Önizleme yenileniyor...", reply_markup=main_menu_keyboard())
-                else:
-                    Logger.warning(f"DEBUG ON_TEXT: NO MATCH found for '{unique_id}'")
-                    await update.message.reply_text("⚠️ Ürün bulunamadı veya oturum süresi doldu.", reply_markup=main_menu_keyboard())
+        # awaiting format: edit_{kind}_{unique_id}
+        # kind can be: s_name, s_desc, p_name, p_desc, name, desc
+        # We extract kind by matching known multi-part prefixes first
+        rest = awaiting[5:]  # strip 'edit_'
+        KIND_PREFIXES = [
+            ("s_name_", "s_name"),
+            ("s_desc_", "s_desc"),
+            ("p_name_", "p_name"),
+            ("p_desc_", "p_desc"),
+            ("name_",   "name"),
+            ("desc_",   "desc"),
+        ]
+        kind = None
+        unique_id = None
+        for prefix, k in KIND_PREFIXES:
+            if rest.startswith(prefix):
+                kind = k
+                unique_id = rest[len(prefix):]
+                break
+        if kind is None:
+            kind = "name"
+            unique_id = rest
+
+        ctx.user_data["awaiting"] = None
+
+        META_KEY_MAP = {
+            "s_name": "shirt_name", "s_desc": "shirt_desc",
+            "p_name": "pants_name", "p_desc": "pants_desc",
+            "name": "name",         "desc": "desc"
+        }
+        meta_key = META_KEY_MAP.get(kind, kind)
+
+        with _pending_lock:
+            # Exact match first, then partial
+            found_id = unique_id if unique_id in _pending_items else None
+            if not found_id:
+                for k in _pending_items.keys():
+                    if unique_id in k or k in unique_id:
+                        found_id = k; break
+
+            if found_id:
+                _pending_items[found_id]["metadata"][meta_key] = text
+                _pending_status[found_id] = "edit"
+                event = _pending_events.get(found_id)
+                if event: event.set()
+        # ── await calls OUTSIDE the lock (threading.Lock blocks event loop if awaited inside) ──
+        if found_id:
+            await update.message.reply_text(
+                f"✅ *{meta_key}* güncellendi. Önizleme yenileniyor...",
+                reply_markup=main_menu_keyboard(), parse_mode="Markdown"
+            )
         else:
-            ctx.user_data["awaiting"] = None
-            await update.message.reply_text("❌ Düzenleme verisi bozuk.", reply_markup=main_menu_keyboard())
+            await update.message.reply_text(
+                "⚠️ Ürün bulunamadı veya oturum süresi doldu.",
+                reply_markup=main_menu_keyboard()
+            )
 
     elif awaiting == "pairs":
         ctx.user_data["awaiting"] = None
@@ -848,23 +1178,43 @@ async def start_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE, keyword_list
     target_label = "çift" if cfg.get('PAIR_MODE', 'pair') == 'pair' else "item"
     if cfg.get('PAIR_MODE') == 'ugc': target_label = "3D asset"
     
-    await update.message.reply_text(
+    start_msg = await update.effective_message.reply_text(
         f"🚀 *İş Başladı!*\n\n"
         f"🔍 Keyword(ler): `{'`, `'.join(keyword_list)}`\n"
         f"🎯 Hedef {target_label}: `{TARGET_PAIRS}` / keyword\n\n"
         f"⚙️ Hazırlanıyor, lütfen bekle…",
-        reply_markup=main_menu_keyboard(),
         parse_mode="Markdown"
     )
+    # Store the message so job_task can delete it when first status arrives
+    ctx.user_data["last_status_msg_id"] = start_msg.message_id
 
     _job_stop.clear()
     _active_task = asyncio.create_task(job_task(update, ctx, keyword_list, cfg, cookie, ugc_cat))
 
 # ─── Background job (Async Task) ──────────────────────────────────────────────
 async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_list, cfg, cookie, ugc_cat=None):
+    # Rolling status message — deletes previous before sending new one
+    _last_status_msg = [None]  # list so inner function can mutate it
+
     async def send(msg, **kwargs):
         try:
-            return await update.message.reply_text(msg, parse_mode="Markdown", **kwargs)
+            # Delete previous status message if it exists
+            if _last_status_msg[0] is not None:
+                try:
+                    await _last_status_msg[0].delete()
+                except Exception:
+                    pass
+                _last_status_msg[0] = None
+            # Also delete the start_job message on first send
+            prev_id = context.user_data.pop("last_status_msg_id", None)
+            if prev_id:
+                try:
+                    await update.get_bot().delete_message(update.effective_chat.id, prev_id)
+                except Exception:
+                    pass
+            sent = await update.effective_message.reply_text(msg, parse_mode="Markdown", **kwargs)
+            _last_status_msg[0] = sent
+            return sent
         except Exception as e:
             Logger.error(f"Mesaj gönderme hatası: {e}")
 
@@ -1128,7 +1478,7 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                     reply_markup=InlineKeyboardMarkup([
                                         [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
                                          InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
-                                        [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_{unique_id}")] +
+                                        [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")] +
                                         ([InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"back_{unique_id}")] if _pending_items[unique_id]["history"] else []),
                                         [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
                                          InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
@@ -1139,7 +1489,7 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                             preview_msg = await send(f"⚠️ Önizleme hatası: {e}\n\n{caption}", reply_markup=InlineKeyboardMarkup([
                                 [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
                                  InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
-                                [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_{unique_id}")],
+                                [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")],
                                 [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
                                  InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
                             ]))
