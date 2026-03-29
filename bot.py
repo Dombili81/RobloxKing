@@ -433,99 +433,134 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # ── Öneriler / Trendler ──
     elif data == "trends_suggestions":
-        await q.edit_message_text("💡 *Öneriler yükleniyor...*\n\nGündem analiz ediliyor, Roblox'a uygun içerikler filtreleniyor...", parse_mode="Markdown")
+        await q.edit_message_text("💡 *Gerçek Zamanlı Gündem Taranıyor...*\n\nReddit (Anime, Oyun, Film) üzerinden anlık trendler çekiliyor...", parse_mode="Markdown")
         try:
-            import requests, re, xml.etree.ElementTree as ET
-
-            # Keywords that suggest Roblox-relevant content (anime, games, characters, shows)
-            ROBLOX_RELEVANT = {
-                "anime", "manga", "naruto", "dragon", "ball", "one", "piece", "demon", "slayer",
-                "attack", "titan", "bleach", "jujutsu", "kaisen", "spy", "family", "chainsaw",
-                "pokemon", "minecraft", "fortnite", "roblox", "goku", "luffy", "nezuko",
-                "spiderman", "spider", "batman", "superman", "avengers", "marvel", "dc",
-                "sonic", "mario", "zelda", "zelda", "spongebob", "cartoon", "animated",
-                "season", "movie", "film", "series", "show", "episode", "trailer",
-                "game", "gaming", "character", "hero", "villain", "magic", "power",
-                "sword", "ninja", "samurai", "pirate", "dragon", "fantasy",
-            }
-            # Exclude clearly irrelevant categories
-            EXCLUDE_WORDS = {
-                "election", "president", "congress", "senate", "vote", "political", "trump", "biden",
-                "economy", "inflation", "stock", "market", "weather", "earthquake", "hurricane",
-                "shooting", "crime", "police", "court", "trial", "nfl", "nba", "mlb", "soccer",
-                "football", "basketball", "baseball", "championship", "tournament", "olympics",
-                "covid", "vaccine", "hospital", "cancer", "disease",
-            }
-
-            def fetch_trends():
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-                # Google Trends daily trending topics (US)
-                url = "https://trends.google.com/trends/trendingsearches/daily/rss?geo=US"
-                r = requests.get(url, headers=headers, timeout=15)
-                Logger.info(f"Trends RSS status={r.status_code}")
+            import requests, re
+            from collections import Counter
+            import asyncio
+            
+            def fetch_live_trends():
+                headers = {"User-Agent": "RobloxBot/1.0 (Trend Analyzer)"}
+                url = "https://www.reddit.com/r/anime+gaming+movies+roblox.json"
+                # Get the absolute hottest/top topics right now
+                r = requests.get(url, headers=headers, params={"limit": 50, "t": "week", "sort": "hot"}, timeout=15)
                 if r.status_code != 200:
                     return []
+                
+                posts = []
+                for c in r.json().get("data", {}).get("children", []):
+                    title = c["data"].get("title", "")
+                    score = c["data"].get("score", 0)
+                    sub = c["data"].get("subreddit", "")
+                    if title and score > 500: # Only highly popular posts
+                        posts.append({"title": title, "score": score, "sub": sub})
+                return posts
+                
+            SKIP_WORDS = {
+                "the","and","for","with","that","this","from","they","what","when","your","have",
+                "you","are","was","has","can","not","but","how","who","why","all","get","got",
+                "just","also","like","will","does","did","been","any","new","roblox","update",
+                "removed","added","changed","about","help","need","want","some","make","look",
+                "megathread", "discussion", "episode", "season", "trailer", "official", "release"
+            }
+                
+            def process_trends(posts):
+                suggestions = []
+                seen_kws = set()
+                
+                # Sort by score to get the most viral things first
+                posts.sort(key=lambda x: x["score"], reverse=True)
+                
+                for p in posts:
+                    title = p["title"]
+                    sub = p["sub"].lower()
+                    
+                    # Try to extract the core subject
+                    # Usually proper nouns or words in quotes/brackets
+                    # Very simple heuristic: take the first 2-3 capitalized words or the text inside brackets/quotes
+                    
+                    subject = ""
+                    # Check for quotes
+                    quotes = re.findall(r'[\'"](.*?)[\'"]', title)
+                    if quotes and len(quotes[0].split()) <= 3:
+                        subject = quotes[0]
+                    else:
+                        # Extract 2 consecutive capitalized words
+                        caps = re.findall(r'\b[A-Z][a-z]+\b', title)
+                        caps = [w for w in caps if w.lower() not in SKIP_WORDS]
+                        if len(caps) >= 2:
+                            subject = f"{caps[0]} {caps[1]}"
+                        elif len(caps) == 1:
+                            subject = caps[0]
+                            
+                    if not subject or len(subject) < 3:
+                        continue
+                        
+                    kw = subject.strip()
+                    if kw.lower() in seen_kws:
+                        continue
+                        
+                    seen_kws.add(kw.lower())
+                    
+                    # Generate a description based on where it's trending
+                    if sub == "anime":
+                        desc = f"Anime dünyasında anlık viral! ({p['score']}+ beğeni)"
+                    elif sub == "gaming":
+                        desc = f"Oyun dünyasının şu anki en sıcak konusu. ({p['score']}+ beğeni)"
+                    elif sub == "movies":
+                        desc = f"Sinema/Dizi severler bunu konuşuyor. ({p['score']}+ beğeni)"
+                    else:
+                        desc = f"Roblox kitlesinin şu anki ana gündemi. ({p['score']}+ beğeni)"
+                        
+                    suggestions.append({
+                        "kw": kw,
+                        "desc": desc,
+                        "context": title[:40] + "..." # Provide a snippet of the real post
+                    })
+                    
+                    if len(suggestions) >= 5:
+                        break
+                        
+                return suggestions
 
-                topics = []
-                try:
-                    # Use regex to extract titles and traffic (avoids XML namespace issues)
-                    titles = re.findall(r'<title><![CDATA[(.+?)]]></title>', r.text)
-                    traffics = re.findall(r'approxTraffic>([^<]+)<', r.text)
-                    # Skip first title (it's the channel title, not a trend)
-                    if titles and titles[0].lower().startswith("trending"):
-                        titles = titles[1:]
-                    for i, title in enumerate(titles):
-                        traffic = traffics[i] if i < len(traffics) else "?"
-                        topics.append((title.strip(), traffic.strip()))
-                    Logger.info(f"Trends parsed: {len(topics)} topics")
-                except Exception as ex:
-                    Logger.error(f"Trends parse error: {ex}")
-                return topics
-
-            def is_roblox_relevant(title):
-                tl = title.lower()
-                words = re.sub(r'[^\w\s]', ' ', tl).split()
-                # Exclude if any exclude word matches
-                for w in words:
-                    if w in EXCLUDE_WORDS: return False
-                # Include if any roblox-relevant word matches, OR if it's a proper name/character
-                for w in words:
-                    if w in ROBLOX_RELEVANT: return True
-                # Also include if title looks like a character/show name (2-3 word proper nouns)
-                proper_words = [w for w in title.split() if w and w[0].isupper()]
-                if len(proper_words) >= 1 and len(title.split()) <= 4:
-                    # Check it's not an excluded topic
-                    return True
-                return False
-
-            all_topics = await asyncio.to_thread(fetch_trends)
-            Logger.info(f"Trends: fetched {len(all_topics)} total topics")
-
-            # Filter for Roblox-relevant ones
-            relevant = [(t, tr) for t, tr in all_topics if is_roblox_relevant(t)]
-            Logger.info(f"Trends: {len(relevant)} relevant topics after filter")
-
-            if not relevant:
-                # Fallback: show all topics if filter is too strict
-                relevant = all_topics[:15]
-
-            # Build keyboard
+            all_posts = await asyncio.to_thread(fetch_live_trends)
+            
+            if not all_posts:
+                await q.edit_message_text(
+                    "❌ İnternetten anlık veri çekilemedi. Lütfen daha sonra tekrar dene.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Ana Menü", callback_data="main")]]),
+                    parse_mode="Markdown"
+                )
+                return
+                
+            suggestions = process_trends(all_posts)
+            
+            if not suggestions:
+                await q.edit_message_text("❌ Yeterli güncel trend bulunamadı.", reply_markup=back_keyboard())
+                return
+            
+            msg = "📈 *GERÇEK ZAMANLI GÜNDEM ÖNERİLERİ*\n_Sosyal medyada (Reddit) en çok konuşulan anlık konular:_\n\n"
             kb_rows = []
-            for i in range(0, min(len(relevant), 20), 1):
-                title, traffic = relevant[i]
-                # Clean title for keyword use
-                kw = re.sub(r'[^\w\s]', '', title).strip()[:40]
-                display = f"🔍 {title[:28]} ({traffic})" if traffic != "?" else f"🔍 {title[:35]}"
-                kb_rows.append([InlineKeyboardButton(display, callback_data=f"run_kw_{kw}")])
+            
+            for item in suggestions:
+                kw = item["kw"]
+                desc = item["desc"]
+                ctx_title = item["context"]
+                
+                msg += f"🔥 *{kw}*\n↳ _{desc}_\n↳ 📰 _Başlık: {ctx_title}_\n\n"
+                
+                run_data = f"run_kw_{kw[:30]}"
+                kb_rows.append([InlineKeyboardButton(f"🚀 Üret: {kw}", callback_data=run_data)])
+                
             kb_rows.append([
-                InlineKeyboardButton("↩️ Yenile", callback_data="trends_suggestions"),
+                InlineKeyboardButton("↩️ Yenile (Anlık)", callback_data="trends_suggestions")
+            ])
+            kb_rows.append([
                 InlineKeyboardButton("⬅️ Ana Menü", callback_data="main")
             ])
-
+            
             await q.edit_message_text(
-                f"💡 *Gündem Önerileri* — Roblox'a Uygun Trendler\n\n"
-                f"Google Trends'ten {len(relevant)} uygun trend bulundu.\n"
-                "_Bir konuya tıkla, hemen arama başlasın:_\n",
+                msg,
                 reply_markup=InlineKeyboardMarkup(kb_rows),
                 parse_mode="Markdown"
             )
@@ -1320,7 +1355,7 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         from telegram import InputMediaPhoto
                         try:
                             with open(shirt_path, "rb") as s_img, open(pants_path, "rb") as p_img:
-                                await update.message.reply_media_group([
+                                await update.effective_message.reply_media_group([
                                     InputMediaPhoto(s_img, caption=f"👕 *Shirt*"),
                                     InputMediaPhoto(p_img, caption=f"👖 *Pants*")
                                 ])
@@ -1390,7 +1425,7 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                         # Re-send media group
                                         try:
                                             with open(shirt_path, "rb") as s_img, open(pants_path, "rb") as p_img:
-                                                await update.message.reply_media_group([
+                                                await update.effective_message.reply_media_group([
                                                     InputMediaPhoto(s_img, caption=f"👕 *Shirt* (Geri Yüklendi)"),
                                                     InputMediaPhoto(p_img, caption=f"👖 *Pants* (Geri Yüklendi)")
                                                 ])
@@ -1473,7 +1508,7 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         preview_msg = None
                         try:
                             with open(out_path, "rb") as f_img:
-                                preview_msg = await update.message.reply_photo(
+                                preview_msg = await update.effective_message.reply_photo(
                                     photo=f_img, caption=caption, 
                                     reply_markup=InlineKeyboardMarkup([
                                         [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
@@ -1637,7 +1672,7 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         
                         try:
                             if thumb_url:
-                                await update.message.reply_photo(
+                                await update.effective_message.reply_photo(
                                     photo=thumb_url,
                                     caption=(
                                         f"⏳ *{items_found}. 3D Asset Onay Bekliyor*\n\n"
@@ -1673,7 +1708,7 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                 # Send the ZIP
                                 try:
                                     with open(zip_path, "rb") as f_zip:
-                                        await update.message.reply_document(
+                                        await update.effective_message.reply_document(
                                             document=f_zip,
                                             caption=(
                                                 f"📦 *3D UGC ({ugc_pack_label}):* `{md_escape(current_item_name)}`\n"
@@ -1703,13 +1738,13 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         # No approval needed — send immediately
                         try:
                             if thumb_url:
-                                await update.message.reply_photo(
+                                await update.effective_message.reply_photo(
                                     photo=thumb_url,
                                     caption=f"🖼️ *Görsel Önizleme:* `{current_item_name}`",
                                     parse_mode="Markdown"
                                 )
                             with open(zip_path, "rb") as f_zip:
-                                await update.message.reply_document(
+                                await update.effective_message.reply_document(
                                     document=f_zip,
                                     caption=(
                                         f"📦 *3D UGC ({ugc_pack_label}):* `{md_escape(current_item_name)}`\n"
