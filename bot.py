@@ -196,7 +196,7 @@ def main_menu_keyboard():
          InlineKeyboardButton("📊  Durum",       callback_data="status")],
         [InlineKeyboardButton("⚙️  Ayarlar",     callback_data="settings"),
          InlineKeyboardButton("📈  Satışlar",    callback_data="finance")],
-        [InlineKeyboardButton("🔥  Popüler Keywordler", callback_data="popular_keywords"),
+        [InlineKeyboardButton("📦  Son Yüklemeler", callback_data="recent_uploads"),
          InlineKeyboardButton("💡  Öneriler", callback_data="trends_suggestions")],
         [InlineKeyboardButton("🛑  Durdur",      callback_data="stop"),
          InlineKeyboardButton("❓  Yardım",      callback_data="help")],
@@ -303,267 +303,236 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(WELCOME, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
         return ConversationHandler.END
 
-    # ── Popüler Keywordler ──
-    elif data == "popular_keywords":
-        # Show category selection menu
-        kb = [
-            [InlineKeyboardButton("👕 Classic (Shirt/Pants)", callback_data="popular_classic"),
-             InlineKeyboardButton("🎩 UGC (3D Aksesuar)", callback_data="popular_ugc")],
-            [InlineKeyboardButton("⬅️ Ana Menü", callback_data="main")]
-        ]
-        await q.edit_message_text(
-            "🔥 *Popüler Keywordler*\n\nHangi kategori için analiz yapılsın?",
-            reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown"
-        )
-
-    elif data in ("popular_classic", "popular_ugc"):
-        is_ugc = (data == "popular_ugc")
-        label = "🎩 UGC (3D Aksesuar)" if is_ugc else "👕 Classic (Shirt/Pants)"
-        await q.edit_message_text(f"⏳ *{label}* için geçen haftanın en çok satanları analiz ediliyor...", parse_mode="Markdown")
-
+    # ── Son Yüklemeler ──
+    elif data.startswith("recent_uploads"):
         try:
-            import requests, re
-            from collections import Counter
-
-            STOP_WORDS = {
-                "shirt", "pants", "pant", "top", "bottom", "clothing", "clothes",
-                "classic", "roblox", "outfit", "set", "pack", "bundle", "style",
-                "new", "best", "cool", "the", "and", "for", "with", "boy", "girl",
-                "men", "women", "man", "woman", "kids", "teen", "aesthetic",
-                "plus", "size", "only", "ver", "version", "hat", "hair", "face",
-                "ugc", "item", "acc", "accessory", "limited", "series"
-            }
-
-            def extract_keywords(names):
-                word_counter = Counter()
-                for name in names:
-                    clean = re.sub(r'[^\w\s]', ' ', name.lower())
-                    clean = re.sub(r'[^\x00-\x7F]+', ' ', clean)
-                    for word in clean.split():
-                        if len(word) >= 3 and word not in STOP_WORDS and not word.isdigit():
-                            word_counter[word] += 1
-                return word_counter
-
-            def fetch_names(cookie, ugc_mode):
-                sess = requests.Session()
-                sess.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
-                if cookie:
-                    sess.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
-
-                all_names = []
-                try:
-                    if ugc_mode:
-                        # v1 catalog API: category=11 = Accessories, sortType=2 Best Selling, sortAggregation=3 Past Week
-                        url_v1 = "https://catalog.roblox.com/v1/search/items"
-                        params = {
-                            "category": 11,
-                            "sortType": 2,
-                            "sortAggregation": 3,
-                            "limit": 30,
-                            "salesTypeFilter": 1,
-                        }
-                        r = sess.get(url_v1, params=params, timeout=12)
-                        Logger.info(f"UGC v1 API status={r.status_code}")
-                        if r.status_code == 200:
-                            item_ids = [it["id"] for it in r.json().get("data", []) if "id" in it]
-                            Logger.info(f"UGC: got {len(item_ids)} IDs, fetching names...")
-                            if item_ids:
-                                # Use v1 search/items/details GET (no CSRF required, returns names)
-                                detail_url = "https://catalog.roblox.com/v1/search/items/details"
-                                for uid in item_ids[:30]:
-                                    dr = sess.get(
-                                        f"https://catalog.roblox.com/v1/assets/{uid}/details",
-                                        timeout=8
-                                    )
-                                    if dr.status_code == 200:
-                                        n = dr.json().get("Name", "")
-                                        if n: all_names.append(n)
-                        else:
-                            Logger.warn(f"UGC v1 API failed: {r.status_code} {r.text[:200]}")
-                    else:
-                        # Classic clothing: v2 API with taxonomy IDs
-                        url_v2 = "https://catalog.roblox.com/v2/search/items/details"
-                        for taxonomy in ["2a2rf9qyeTd8W5iegK2Prc", "49cFNAJWuwiJJVUSADG6DR"]:
-                            params = {"taxonomy": taxonomy, "sortType": 2, "sortAggregation": 3, "limit": 30, "salesTypeFilter": 1}
-                            r = sess.get(url_v2, params=params, timeout=12)
-                            if r.status_code == 200:
-                                for item in r.json().get("data", []):
-                                    n = item.get("name", "")
-                                    if n: all_names.append(n)
-                except Exception as ex:
-                    Logger.error(f"fetch_names error: {ex}")
-                return all_names
-
-            cookie = load_cookie()
-            all_names = await asyncio.to_thread(fetch_names, cookie, is_ugc)
-
-            if not all_names:
-                await q.edit_message_text(
-                    "❌ Roblox'tan veri alınamadı.\n\n_Cookie ayarlı ve geçerli olduğundan emin ol._",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Geri", callback_data="popular_keywords")]]),
-                    parse_mode="Markdown"
-                )
+            parts = data.split("_")
+            page = int(parts[2]) if len(parts) > 2 else 0
+            offset = page * 5
+            
+            await q.edit_message_text(f"📦 *Son yüklemeler getiriliyor (Sayfa {page+1})...*", parse_mode="Markdown")
+            
+            import requests
+            # Fetch 6 items to see if there's a next page
+            recent_items_all = await asyncio.to_thread(db_manager.get_recent_uploads, 6, offset)
+            
+            if not recent_items_all and page == 0:
+                await q.edit_message_text("❌ Henüz yüklenen hiçbir ürün bulunamadı.", reply_markup=back_keyboard(), parse_mode="Markdown")
                 return
-
-            word_counts = extract_keywords(all_names)
-            top_keywords = [kw for kw, _ in word_counts.most_common(24) if len(kw) >= 3]
-
+            elif not recent_items_all:
+                await q.edit_message_text("❌ Bu sayfada sonuç bulunamadı.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Önceki", callback_data=f"recent_uploads_{page-1}")]]), parse_mode="Markdown")
+                return
+            
+            has_next = len(recent_items_all) == 6
+            recent_items = recent_items_all[:5]
+            
             kb_rows = []
-            for i in range(0, len(top_keywords), 2):
-                row = [InlineKeyboardButton(f"🔍 {top_keywords[i]}", callback_data=f"run_kw_{top_keywords[i]}")]
-                if i + 1 < len(top_keywords):
-                    row.append(InlineKeyboardButton(f"🔍 {top_keywords[i+1]}", callback_data=f"run_kw_{top_keywords[i+1]}"))
-                kb_rows.append(row)
-            kb_rows.append([
-                InlineKeyboardButton("↩️ Yenile", callback_data=data),
-                InlineKeyboardButton("⬅️ Kategoriler", callback_data="popular_keywords")
-            ])
+            valid_count = 0
+            
+            def fetch_names(items, current_cookie):
+                sess = requests.Session()
+                if current_cookie:
+                    sess.cookies.set(".ROBLOSECURITY", current_cookie, domain=".roblox.com")
+                results = []
+                for item in items:
+                    r_id = item.get("roblox_id", "")
+                    if not r_id or str(r_id) in ("None", "0"):
+                        continue
+                    name = f"Ürün ({r_id})" # Default
+                    try:
+                        # Economy API is better for off-sale/private group items
+                        r = sess.get(f"https://economy.roblox.com/v2/assets/{r_id}/details", timeout=4)
+                        if r.status_code == 200:
+                            name = r.json().get("Name", name)
+                        else:
+                            # Fallback to catalog API
+                            r2 = sess.get(f"https://catalog.roblox.com/v1/assets/{r_id}/details", timeout=4)
+                            if r2.status_code == 200:
+                                name = r2.json().get("Name", name)
+                    except Exception:
+                        pass
+                    
+                    results.append({"id": r_id, "name": name, "is_pair": item.get("is_pair", False)})
+                return results
 
+            fetched_items = await asyncio.to_thread(fetch_names, recent_items, load_cookie())
+            
+            for item in fetched_items:
+                r_id = item["id"]
+                name = item["name"]
+                
+                if item.get("is_pair"):
+                    name += " (Çift)"
+                
+                # Telegram inline button sınırı
+                btn_name = f"📦 {name[:40]}"
+                kb_rows.append([InlineKeyboardButton(btn_name, callback_data=f"preview_{r_id}_{page}")])
+                valid_count += 1
+                
+            if valid_count == 0:
+                await q.edit_message_text("❌ Geçerli bir yükleme ID'si bulunamadı.", reply_markup=back_keyboard(), parse_mode="Markdown")
+                return
+                
+            nav_row = []
+            if page > 0:
+                nav_row.append(InlineKeyboardButton("⬅️ Önceki Sayfa", callback_data=f"recent_uploads_{page-1}"))
+            if has_next:
+                nav_row.append(InlineKeyboardButton("Sonraki Sayfa ➡️", callback_data=f"recent_uploads_{page+1}"))
+            
+            if nav_row:
+                kb_rows.append(nav_row)
+            kb_rows.append([InlineKeyboardButton("🏠 Ana Menü", callback_data="main")])
+            
             await q.edit_message_text(
-                f"🔥 *{label} — Geçen Hafta En Çok Satanlar*\n\n"
-                f"Analiz edilen ürün: `{len(all_names)}`\n"
-                "Bir keyword'e tıkla, iş hemen başlasın:\n",
+                f"📦 *Son Yüklenen Ürünler (Sayfa {page+1})*\n\nÖnizlemesini görmek istediğin ürüne tıkla:",
                 reply_markup=InlineKeyboardMarkup(kb_rows),
                 parse_mode="Markdown"
             )
-
+            
         except Exception as e:
-            Logger.error(f"Popular keywords error: {e}")
+            Logger.error(f"Recent uploads err: {e}")
             await q.edit_message_text(f"❌ Hata: `{md_escape(str(e))}`", reply_markup=back_keyboard(), parse_mode="Markdown")
+
+    # ── Önizleme (Preview) ──
+    elif data.startswith("preview_"):
+        parts = data.split("_")
+        r_id = parts[1]
+        page = parts[2] if len(parts) > 2 else "0"
+        
+        await q.edit_message_text(f"⏳ *Önizleme getiriliyor ({r_id})...*", parse_mode="Markdown")
+        
+        try:
+            import requests
+            cookie = load_cookie()
+            
+            title = "Bilinmeyen Ürün"
+            desc = "Açıklama bulunmuyor."
+            created_str = "Bilinmiyor"
+            
+            def get_details():
+                sess = requests.Session()
+                if cookie:
+                    sess.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
+                try:
+                    d = sess.get(f"https://economy.roblox.com/v2/assets/{r_id}/details", timeout=5)
+                    if d.status_code == 200:
+                        return d.json()
+                    d2 = sess.get(f"https://catalog.roblox.com/v1/assets/{r_id}/details", timeout=5)
+                    if d2.status_code == 200:
+                        return d2.json()
+                except Exception:
+                    pass
+                return {}
+            
+            details = await asyncio.to_thread(get_details)
+            if details:
+                title = details.get("Name", title)
+                raw_desc = details.get("Description", "")
+                if raw_desc:
+                    desc = raw_desc
+                
+                raw_date = details.get("Created", "")
+                if raw_date and "T" in raw_date:
+                    date_part, time_part = raw_date.split("T")
+                    time_part = time_part.split(".")[0]
+                    created_str = f"{date_part} {time_part}"
+                elif raw_date:
+                    created_str = raw_date
+            
+            async with RobloxScraper(cookie) as roblox:
+                thumb_url = await roblox.get_thumbnail(r_id)
+                
+            item_link = f"https://www.roblox.com/catalog/{r_id}"
+            
+            # Telegram caption limiti ~1024 karakterdir. Çökmemesi için 900'de kesilir.
+            desc_cut = desc[:900] + ("..." if len(desc) > 900 else "")
+            caption = (
+                f"🏷️ *{md_escape(title)}*\n\n"
+                f"📝 _{md_escape(desc_cut)}_\n\n"
+                f"📅 *Yüklenme:* `{created_str}`\n\n"
+                f"🔗 **[Satın Alma Linki İçin Tıklayın]({item_link})**"
+            )
+            
+            if thumb_url:
+                await update.effective_chat.send_photo(
+                    photo=thumb_url,
+                    caption=caption,
+                    parse_mode="Markdown"
+                )
+                await q.message.delete()
+                await update.effective_chat.send_message(
+                    "⬅️ Listeye Geri Dön",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"recent_uploads_{page}")]])
+                )
+            else:
+                await q.edit_message_text(
+                    f"❌ *Görsel alınamadı!*\n\n{caption}",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"recent_uploads_{page}")]])
+                    , parse_mode="Markdown", disable_web_page_preview=True
+                )
+                
+        except Exception as e:
+            Logger.error(f"Preview err: {e}")
+            await q.edit_message_text(
+                f"❌ Önizleme Hatası: `{md_escape(str(e))}`",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"recent_uploads_{page}")]])
+                , parse_mode="Markdown"
+            )
 
     # ── Öneriler / Trendler ──
     elif data == "trends_suggestions":
-        await q.edit_message_text("💡 *Gerçek Zamanlı Gündem Taranıyor...*\n\nReddit (Anime, Oyun, Film) üzerinden anlık trendler çekiliyor...", parse_mode="Markdown")
+        await q.edit_message_text(
+            "💡 *Akıllı Trend Motoru Devrede*\n\n"
+            "1️⃣ Google Trends ve Roblox Catalog verileri toplanıyor...\n"
+            "2️⃣ Potansiyel stiller filtreleniyor...\n"
+            "3️⃣ Piyasada test ediliyor...\n\n"
+            "⏳ _Lütfen 5-15 saniye bekleyin, gerçek satış odaklı anahtar kelimeler oluşturuluyor..._",
+            parse_mode="Markdown"
+        )
         try:
-            import requests, re
-            from collections import Counter
-            import asyncio
+            from scrapers.trend_engine import TrendEngine
             
-            def fetch_live_trends():
-                headers = {"User-Agent": "RobloxBot/1.0 (Trend Analyzer)"}
-                url = "https://www.reddit.com/r/anime+gaming+movies+roblox.json"
-                # Get the absolute hottest/top topics right now
-                r = requests.get(url, headers=headers, params={"limit": 50, "t": "week", "sort": "hot"}, timeout=15)
-                if r.status_code != 200:
-                    return []
-                
-                posts = []
-                for c in r.json().get("data", {}).get("children", []):
-                    title = c["data"].get("title", "")
-                    score = c["data"].get("score", 0)
-                    sub = c["data"].get("subreddit", "")
-                    if title and score > 500: # Only highly popular posts
-                        posts.append({"title": title, "score": score, "sub": sub})
-                return posts
-                
-            SKIP_WORDS = {
-                "the","and","for","with","that","this","from","they","what","when","your","have",
-                "you","are","was","has","can","not","but","how","who","why","all","get","got",
-                "just","also","like","will","does","did","been","any","new","roblox","update",
-                "removed","added","changed","about","help","need","want","some","make","look",
-                "megathread", "discussion", "episode", "season", "trailer", "official", "release"
-            }
-                
-            def process_trends(posts):
-                suggestions = []
-                seen_kws = set()
-                
-                # Sort by score to get the most viral things first
-                posts.sort(key=lambda x: x["score"], reverse=True)
-                
-                for p in posts:
-                    title = p["title"]
-                    sub = p["sub"].lower()
-                    
-                    # Try to extract the core subject
-                    # Usually proper nouns or words in quotes/brackets
-                    # Very simple heuristic: take the first 2-3 capitalized words or the text inside brackets/quotes
-                    
-                    subject = ""
-                    # Check for quotes
-                    quotes = re.findall(r'[\'"](.*?)[\'"]', title)
-                    if quotes and len(quotes[0].split()) <= 3:
-                        subject = quotes[0]
-                    else:
-                        # Extract 2 consecutive capitalized words
-                        caps = re.findall(r'\b[A-Z][a-z]+\b', title)
-                        caps = [w for w in caps if w.lower() not in SKIP_WORDS]
-                        if len(caps) >= 2:
-                            subject = f"{caps[0]} {caps[1]}"
-                        elif len(caps) == 1:
-                            subject = caps[0]
-                            
-                    if not subject or len(subject) < 3:
-                        continue
-                        
-                    kw = subject.strip()
-                    if kw.lower() in seen_kws:
-                        continue
-                        
-                    seen_kws.add(kw.lower())
-                    
-                    # Generate a description based on where it's trending
-                    if sub == "anime":
-                        desc = f"Anime dünyasında anlık viral! ({p['score']}+ beğeni)"
-                    elif sub == "gaming":
-                        desc = f"Oyun dünyasının şu anki en sıcak konusu. ({p['score']}+ beğeni)"
-                    elif sub == "movies":
-                        desc = f"Sinema/Dizi severler bunu konuşuyor. ({p['score']}+ beğeni)"
-                    else:
-                        desc = f"Roblox kitlesinin şu anki ana gündemi. ({p['score']}+ beğeni)"
-                        
-                    suggestions.append({
-                        "kw": kw,
-                        "desc": desc,
-                        "context": title[:40] + "..." # Provide a snippet of the real post
-                    })
-                    
-                    if len(suggestions) >= 5:
-                        break
-                        
-                return suggestions
-
-            all_posts = await asyncio.to_thread(fetch_live_trends)
+            engine = TrendEngine(db_manager)
+            trends = await engine.get_suggestions()
             
-            if not all_posts:
+            if not trends:
                 await q.edit_message_text(
-                    "❌ İnternetten anlık veri çekilemedi. Lütfen daha sonra tekrar dene.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Ana Menü", callback_data="main")]]),
+                    "❌ *Roblox'ta kanıtlanmış satış hacmi olan yeni bir konu bulunamadı.*\n\n"
+                    "_Biraz sonra tekrar dene._",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("↩️ Tekrar Tara", callback_data="trends_suggestions")],
+                        [InlineKeyboardButton("🏠 Ana Menü", callback_data="main")]
+                    ]),
                     parse_mode="Markdown"
                 )
                 return
-                
-            suggestions = process_trends(all_posts)
-            
-            if not suggestions:
-                await q.edit_message_text("❌ Yeterli güncel trend bulunamadı.", reply_markup=back_keyboard())
-                return
-            
-            msg = "📈 *GERÇEK ZAMANLI GÜNDEM ÖNERİLERİ*\n_Sosyal medyada (Reddit) en çok konuşulan anlık konular:_\n\n"
+
+            def fmt(n):
+                if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
+                if n >= 1_000: return f"{n/1_000:.1f}K"
+                return str(n)
+
+            msg = "🔥 *ROBLOX SATIŞ KANITLI EN POPÜLER 5 TREND*\n"
+            msg += "_Akıllı Motor: Veriler filtrelendi, dönüştürüldü ve hacimleri doğrulandı:_\n\n"
             kb_rows = []
-            
-            for item in suggestions:
+
+            for i, item in enumerate(trends, 1):
                 kw = item["kw"]
-                desc = item["desc"]
-                ctx_title = item["context"]
+                favs = fmt(item["favorites"])
+                sample = item["sample_item"]
+                clicks = item.get("clicks", 0)
+                click_warn = f" (🔥 {clicks} Kez Üretildi)" if clicks > 0 else ""
                 
-                msg += f"🔥 *{kw}*\n↳ _{desc}_\n↳ 📰 _Başlık: {ctx_title}_\n\n"
-                
-                run_data = f"run_kw_{kw[:30]}"
-                kb_rows.append([InlineKeyboardButton(f"🚀 Üret: {kw}", callback_data=run_data)])
-                
-            kb_rows.append([
-                InlineKeyboardButton("↩️ Yenile (Anlık)", callback_data="trends_suggestions")
-            ])
-            kb_rows.append([
-                InlineKeyboardButton("⬅️ Ana Menü", callback_data="main")
-            ])
-            
-            await q.edit_message_text(
-                msg,
-                reply_markup=InlineKeyboardMarkup(kb_rows),
-                parse_mode="Markdown"
-            )
+                msg += f"*{i}. {md_escape(kw)}{click_warn}*\n"
+                msg += f"↳ 🌟 Hacim: `{favs} Favori`\n"
+                msg += f"↳ 👕 Örnek ürün: _{md_escape(sample)}_\n\n"
+                kb_rows.append([InlineKeyboardButton(f"🚀 Üret: {kw}", callback_data=f"run_kw_{kw[:30]}")])
+
+            kb_rows.append([InlineKeyboardButton("↩️ Tekrar Tara (Anlık Yeni)", callback_data="trends_suggestions")])
+            kb_rows.append([InlineKeyboardButton("🏠 Ana Menü", callback_data="main")])
+
+            await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb_rows), parse_mode="Markdown")
+
         except Exception as e:
             Logger.error(f"Trends error: {e}")
             await q.edit_message_text(f"❌ Hata: `{md_escape(str(e))}`", reply_markup=back_keyboard(), parse_mode="Markdown")
@@ -571,6 +540,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("run_kw_"):
         # Direct keyword run from popular keywords
         keyword = data[7:]  # strip 'run_kw_'
+        
+        # Track click
+        try: db_manager.increment_trend_click(keyword)
+        except Exception as e: print(f"Trend click error: {e}")
         if _job_info["status"] == "running":
             await q.edit_message_text("⚠️ Zaten bir iş çalışıyor.", reply_markup=back_keyboard())
             return
@@ -613,32 +586,37 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
             
         await q.edit_message_text("⏳ *Satış verileri çekiliyor...*", parse_mode="Markdown")
-        monitor = GroupFinanceMonitor(cookie, gid)
-        summary = await asyncio.to_thread(monitor.get_summary)
         
-        pending = summary.get("pending", 0)
-        sales   = summary.get("item_sales_robux", 0)
-        balance = summary.get("user_balance", 0)
-        u_name  = summary.get("user_name", "Bilinmeyen")
-        g_err   = summary.get("group_error")
+        try:
+            monitor = GroupFinanceMonitor(cookie, gid)
+            summary = await asyncio.to_thread(monitor.get_summary)
+            
+            pending = summary.get("pending", 0)
+            sales   = summary.get("item_sales_robux", 0)
+            balance = summary.get("user_balance", 0)
+            u_name  = summary.get("user_name", "Bilinmeyen")
+            g_err   = summary.get("group_error")
 
-        # Grup satışları metni
-        if g_err:
-            group_text = f"⚠️ *Grup Satışları:* `{g_err}`"
-        else:
-            group_text = (
-                f"💸 Bekleyen Robux: `{pending} R$`\n"
-                f"🛍️ Bugün Satışlardan Gelen: `{sales} R$`"
+            # Grup satışları metni
+            if g_err:
+                group_text = f"⚠️ *Grup Satışları:* `{md_escape(str(g_err))}`"
+            else:
+                group_text = (
+                    f"💸 Bekleyen Robux: `{pending} R$`\n"
+                    f"🛍️ Bugün Satışlardan Gelen: `{sales} R$`"
+                )
+
+            text = (
+                f"📈 *Finans Özeti*\n\n"
+                f"👤 Kullanıcı: `{md_escape(u_name)}`\n"
+                f"💰 *Hesap Bakiyesi:* `{balance} R$`\n\n"
+                f"{group_text}\n\n"
+                f"_Anlık satış bildirimleri arkaplanda aktiftir._"
             )
-
-        text = (
-            f"📈 *Finans Özeti*\n\n"
-            f"👤 Kullanıcı: `{u_name}`\n"
-            f"💰 *Hesap Bakiyesi:* `{balance} R$`\n\n"
-            f"{group_text}\n\n"
-            f"_Anlık satış bildirimleri arkaplanda aktiftir._"
-        )
-        await q.edit_message_text(text, reply_markup=back_keyboard(), parse_mode="Markdown")
+            await q.edit_message_text(text, reply_markup=back_keyboard(), parse_mode="Markdown")
+        except Exception as e:
+            Logger.error(f"Finans Hata: {e}")
+            await q.edit_message_text(f"❌ *Bağlantı Hatası:*\n`{md_escape(str(e))}`\n_Cookie güncellemeyi dene._", reply_markup=back_keyboard(), parse_mode="Markdown")
 
     # ── Ayarlar ──
     elif data == "settings":

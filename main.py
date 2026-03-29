@@ -129,8 +129,8 @@ async def upload_pair_with_crosslink(shirt_id, shirt_path, pants_id, pants_path,
         return upload_count
     
     # ── Duplicate Check Mark ──
-    db_manager.mark_item_as_uploaded(shirt_id, s_asset_id)
-    db_manager.mark_item_as_uploaded(pants_id, p_asset_id)
+    db_manager.mark_item_as_uploaded(shirt_id, s_asset_id, is_pair=True)
+    db_manager.mark_item_as_uploaded(pants_id, p_asset_id, is_pair=True)
 
     upload_count += 1
     s_url = f"https://www.roblox.com/catalog/{s_asset_id}/"

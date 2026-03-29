@@ -68,13 +68,14 @@ class FirebaseManager:
             print(f"Firebase duplicate check hatası: {e}")
             return False
 
-    def mark_item_as_uploaded(self, source_id: str, roblox_id: str):
+    def mark_item_as_uploaded(self, source_id: str, roblox_id: str, is_pair: bool = False):
         """Yüklenen itemi kaydederek tekrarını önleriz."""
         if not self.is_active: return
         try:
             self.db.collection("uploaded_items").document(str(source_id)).set({
                 "original_id": str(source_id),
                 "roblox_id": str(roblox_id),
+                "is_pair": is_pair,
                 "timestamp": firestore.SERVER_TIMESTAMP
             })
         except Exception as e:
@@ -90,3 +91,31 @@ class FirebaseManager:
         except Exception as e:
             print(f"Firebase okuma hatası: {e}")
         return {}
+
+    def get_recent_uploads(self, limit: int = 5, offset: int = 0) -> list:
+        """Son eklenen ürünleri Firestore'dan liste formatında getirir."""
+        if not self.is_active: return []
+        try:
+            query = self.db.collection("uploaded_items").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(limit)
+            if offset > 0:
+                query = query.offset(offset)
+            results = []
+            for doc in query.stream():
+                results.append(doc.to_dict())
+            return results
+        except Exception as e:
+            print(f"Firebase recent_uploads okuma hatası: {e}")
+            return []
+
+    def increment_trend_click(self, keyword: str):
+        """Kullanıcının üretime başlattığı trendin tıklama sayısını artırır."""
+        if not self.is_active: return
+        try:
+            doc_ref = self.db.collection("trend_analytics").document(str(keyword))
+            doc_ref.set({
+                "keyword": keyword,
+                "click_count": firestore.Increment(1),
+                "last_clicked": firestore.SERVER_TIMESTAMP
+            }, merge=True)
+        except Exception as e:
+            print(f"Firebase trend click kaydı hatası: {e}")
