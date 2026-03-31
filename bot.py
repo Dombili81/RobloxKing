@@ -198,6 +198,7 @@ def main_menu_keyboard():
          InlineKeyboardButton("📈  Satışlar",    callback_data="finance")],
         [InlineKeyboardButton("📦  Son Yüklemeler", callback_data="recent_uploads"),
          InlineKeyboardButton("💡  Öneriler", callback_data="trends_suggestions")],
+        [InlineKeyboardButton("🎲  3D Model Oluştur", callback_data="model3d_menu")],
         [InlineKeyboardButton("🛑  Durdur",      callback_data="stop"),
          InlineKeyboardButton("❓  Yardım",      callback_data="help")],
     ])
@@ -478,6 +479,50 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"recent_uploads_{page}")]])
                 , parse_mode="Markdown"
             )
+
+    # ── 3D Model Menüsü ──
+    elif data == "model3d_menu":
+        await q.edit_message_text(
+            "🎲 *3D Model Oluşturma Aracı*\n\n"
+            "Ücretsiz AI teknolojisi ile 3D model üret ve GLB dosyası olarak al.\n\n"
+            "*Text ile:* Modeli kelimelerle açıkla\n"
+            "*Görsel ile:* Fotoğraf yükle, 3D'ye dönüştür\n\n"
+            "⏱ Ortalama süre: 2-5 dakika",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✍️  Metin ile Oluştur", callback_data="model3d_text")],
+                [InlineKeyboardButton("🖼️  Görsel ile Oluştur", callback_data="model3d_image")],
+                [InlineKeyboardButton("⬅️  Ana Menü", callback_data="main")],
+            ]),
+            parse_mode="Markdown"
+        )
+
+    elif data == "model3d_text":
+        ctx.user_data["awaiting"] = "model3d_prompt"
+        await q.edit_message_text(
+            "✍️ *3D Model — Metin Açıklaması*\n\n"
+            "Oluşturmak istediğin modeli Türkçe veya İngilizce yaz:\n\n"
+            "💡 *Örnek:*\n"
+            "`a red samurai armor`\n"
+            "`anime katana sword glowing blue`\n"
+            "`cute robot character white and orange`\n\n"
+            "Şimdi mesajını yaz:",
+            reply_markup=back_keyboard(),
+            parse_mode="Markdown"
+        )
+
+    elif data == "model3d_image":
+        ctx.user_data["awaiting"] = "model3d_image_wait"
+        await q.edit_message_text(
+            "🖼️ *3D Model — Görsel ile Oluştur*\n\n"
+            "Şimdi bir fotoğraf gönder, AI 3D modele dönüştürsün.\n\n"
+            "📌 *İpuçları:*\n"
+            "• Tek nesne içeren fotoğraflar daha iyi sonuç verir\n"
+            "• Sade / beyaz arka plan tercih et\n"
+            "• Nesne net ve ortada olsun\n\n"
+            "Fotoğrafı gönder:",
+            reply_markup=back_keyboard(),
+            parse_mode="Markdown"
+        )
 
     # ── Öneriler / Trendler ──
     elif data == "trends_suggestions":
@@ -1177,6 +1222,72 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("✅ Sıralama tercihin kaydedildi. Bir sonraki aramada bu sıraya göre aranacak.", reply_markup=settings_keyboard(), parse_mode="Markdown")
 
+    elif awaiting == "model3d_prompt":
+        ctx.user_data["awaiting"] = None
+        prompt = text
+        status_msg = await update.message.reply_text(
+            f"⏳ *3D Model üretiliyor...*\n\n"
+            f"📝 Prompt: `{md_escape(prompt)}`\n\n"
+            f"1️⃣ AI görsel oluşturuluyor...\n"
+            f"_Bu işlem 2-5 dakika sürebilir. Hazır olduğunda GLB dosyasını göndereceğim._",
+            parse_mode="Markdown"
+        )
+        try:
+            from scrapers.model3d_engine import Model3DEngine
+            engine = Model3DEngine()
+            glb_path = await asyncio.to_thread(engine.text_to_3d_sync, prompt)
+
+            await status_msg.edit_text(
+                f"✅ *3D Model hazır!*\n\n"
+                f"📝 Prompt: `{md_escape(prompt)}`\n\n"
+                f"👇 GLB dosyası aşağıda:",
+                parse_mode="Markdown"
+            )
+            filename = os.path.basename(glb_path)
+            with open(glb_path, "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename=filename,
+                    caption=f"🎲 3D Model: `{md_escape(prompt)}`",
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🎲 Yeni Model", callback_data="model3d_menu"),
+                         InlineKeyboardButton("🏠 Ana Menü", callback_data="main")]
+                    ])
+                )
+            try:
+                os.remove(glb_path)
+            except Exception:
+                pass
+        except Exception as e:
+            Logger.error(f"3D Model hatası: {e}")
+            err_str = str(e)
+            if "ZeroGPU quotas" in err_str:
+                err_text = (
+                    "❌ *Hugging Face ZeroGPU Limitine Takıldınız!*\n\n"
+                    "Bu servisi çok fazla kullanan anonim kullanıcılardan biri olduğunuz için geçici sınırlandırmaya girdiniz.\n\n"
+                    "🛠️ *Nasıl Çözülür?*\n"
+                    "1. [huggingface.co](https://huggingface.co) adresinden ücretsiz üye olun\n"
+                    "2. Ayarlardan bir 'Access Token' (Read/Write) alın\n"
+                    "3. `bot_config.txt` dosyanıza `HF_TOKEN=hf_...` satırını ekleyin\n"
+                    "4. Botu yeniden başlatın."
+                )
+            else:
+                err_text = (
+                    f"❌ *3D Model üretimi başarısız.*\n\n"
+                    f"Hata: `{err_str[:200].replace('`', '')}`\n\n"
+                    f"TRELLIS Space meşgul olabilir, biraz sonra tekrar dene."
+                )
+            await status_msg.edit_text(
+                err_text,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Tekrar Dene", callback_data="model3d_text"),
+                     InlineKeyboardButton("🏠 Ana Menü", callback_data="main")]
+                ]),
+                parse_mode="Markdown",
+                disable_web_page_preview=True
+            )
+
     else:
         await update.message.reply_text("Ana menü:", reply_markup=main_menu_keyboard())
 
@@ -1784,6 +1895,93 @@ async def live_sale_notifier_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         Logger.error(f"Satış takip hatası: {e}")
 
+# ─── Photo handler (Image → 3D) ───────────────────────────────────────────────
+async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return await deny(update)
+    awaiting = ctx.user_data.get("awaiting")
+    if awaiting != "model3d_image_wait":
+        # Not in 3D mode — ignore silently
+        return
+
+    ctx.user_data["awaiting"] = None
+
+    # Get highest quality photo
+    if update.message.photo:
+        photo_file = await update.message.photo[-1].get_file()
+    elif update.message.document:
+        photo_file = await update.message.document.get_file()
+    else:
+        await update.message.reply_text("❌ Geçersiz dosya. Lütfen bir fotoğraf gönder.")
+        return
+
+    status_msg = await update.message.reply_text(
+        "⏳ *Görsel alındı, 3D model üretiliyor...*\n\n"
+        "2️⃣ TRELLIS AI görselinizi 3D'ye dönüştürüyor...\n"
+        "_Bu işlem 2-5 dakika sürebilir._",
+        parse_mode="Markdown"
+    )
+
+    try:
+        # Download image bytes
+        import io
+        buf = io.BytesIO()
+        await photo_file.download_to_memory(buf)
+        image_bytes = buf.getvalue()
+
+        from scrapers.model3d_engine import Model3DEngine
+        engine = Model3DEngine()
+        glb_path = await asyncio.to_thread(engine.image_to_3d_sync, image_bytes)
+
+        await status_msg.edit_text(
+            "✅ *3D Model hazır!*\n\n"
+            "👇 GLB dosyası aşağıda:",
+            parse_mode="Markdown"
+        )
+        filename = os.path.basename(glb_path)
+        with open(glb_path, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename=filename,
+                caption="🎲 Görselinden üretilen 3D Model",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎲 Yeni Model", callback_data="model3d_menu"),
+                     InlineKeyboardButton("🏠 Ana Menü", callback_data="main")]
+                ])
+            )
+        try:
+            os.remove(glb_path)
+        except Exception:
+            pass
+
+    except Exception as e:
+        Logger.error(f"3D Image Model hatası: {e}")
+        err_str = str(e)
+        if "ZeroGPU quotas" in err_str:
+            err_text = (
+                "❌ *Hugging Face ZeroGPU Limitine Takıldınız!*\n\n"
+                "Bu servisi çok fazla kullanan anonim kullanıcılardan biri olduğunuz için geçici sınırlandırmaya girdiniz.\n\n"
+                "🛠️ *Nasıl Çözülür?*\n"
+                "1. [huggingface.co](https://huggingface.co) adresinden ücretsiz üye olun\n"
+                "2. Ayarlardan bir 'Access Token' (Read/Write) alın\n"
+                "3. `bot_config.txt` dosyanıza `HF_TOKEN=hf_...` satırını ekleyin\n"
+                "4. Botu yeniden başlatın."
+            )
+        else:
+            err_text = (
+                f"❌ *3D Model üretimi başarısız.*\n\n"
+                f"Hata: `{err_str[:200].replace('`', '')}`\n\n"
+                f"TRELLIS Space meşgul olabilir, biraz sonra tekrar dene."
+            )
+        await status_msg.edit_text(
+            err_text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Tekrar Dene", callback_data="model3d_image"),
+                 InlineKeyboardButton("🏠 Ana Menü", callback_data="main")]
+            ]),
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
+
 # ─── Dummy Web Server ─────────────────────────────────────────────────────────
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -1834,6 +2032,7 @@ def main():
     app.add_handler(CommandHandler("debug_sync", cmd_debug_sync))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, on_photo))
     app.add_error_handler(error_handler)
 
     Logger.info("Ayarlar yükleniyor...")
