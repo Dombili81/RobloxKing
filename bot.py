@@ -287,6 +287,65 @@ async def cmd_debug_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     status = "BAŞARILI ✅" if db_manager.is_active else "BAŞARISIZ ❌ (Firebase Bağlı Değil)"
     await update.message.reply_text(f"🔄 **Manuel Senkronizasyon:** {status}\n\nFirebase'e itilen değerler:\n`GROUP_ID: {cfg['GROUP_ID']}`\n`TARGET_PAIRS: {cfg['TARGET_PAIRS']}`", parse_mode="Markdown")
 
+# ─── Trend Sayfalama Yardımcısı ──────────────────────────────────────────────
+PER_PAGE = 5
+
+async def _send_trends_page(q, ctx):
+    """Trend önerilerini sayfa sayfa gösterir (5'er 5'er)."""
+    all_trends = ctx.user_data.get("trends_all", [])
+    page = ctx.user_data.get("trends_page", 0)
+    total = len(all_trends)
+    total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+
+    start = page * PER_PAGE
+    end = start + PER_PAGE
+    page_items = all_trends[start:end]
+
+    def fmt(n):
+        if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
+        if n >= 1_000: return f"{n/1_000:.1f}K"
+        return str(n)
+
+    msg = f"🔥 *POP KÜLTÜR TREND RADAR* _(Sayfa {page+1}/{total_pages})_\n"
+    msg += "_Anime · Film · Dizi · Spor · Müzik · Oyun · Roblox_\n\n"
+    kb_rows = []
+
+    for i, item in enumerate(page_items, start + 1):
+        kw = item["kw"]
+        favs = fmt(item["favorites"])
+        sample = item["sample_item"]
+        clicks = item.get("clicks", 0)
+        label = item.get("label", "⭐")
+        extra = item.get("extra", "")
+        click_warn = f" (🔥 {clicks}x)" if clicks > 0 else ""
+
+        msg += f"*{i}. {md_escape(kw)}{click_warn}*\n"
+        msg += f"↳ {label} | 🌟 `{favs}`"
+        if extra:
+            msg += f" | {md_escape(extra)}"
+        msg += "\n"
+        msg += f"↳ 👕 _{md_escape(sample)}_\n\n"
+        kb_rows.append([InlineKeyboardButton(f"🚀 Üret: {kw}", callback_data=f"run_kw_{kw[:30]}")])
+
+    # Navigasyon satırı
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ Önceki", callback_data=f"trends_page_{page-1}"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("➡️ Sonraki", callback_data=f"trends_page_{page+1}"))
+    if nav_row:
+        kb_rows.append(nav_row)
+
+    kb_rows.append([InlineKeyboardButton("🔄 Taze Veri Çek", callback_data="trends_refresh")])
+    kb_rows.append([InlineKeyboardButton("🏠 Ana Menü", callback_data="main")])
+
+    await q.edit_message_text(
+        msg,
+        reply_markup=InlineKeyboardMarkup(kb_rows),
+        parse_mode="Markdown"
+    )
+
 # ─── Callback router ─────────────────────────────────────────────────────────
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return await deny(update)
@@ -525,62 +584,51 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
     # ── Öneriler / Trendler ──
-    elif data == "trends_suggestions":
+    elif data in ("trends_suggestions", "trends_refresh"):
+        force = (data == "trends_refresh")
         await q.edit_message_text(
-            "💡 *Akıllı Trend Motoru Devrede*\n\n"
-            "1️⃣ Google Trends ve Roblox Catalog verileri toplanıyor...\n"
-            "2️⃣ Potansiyel stiller filtreleniyor...\n"
-            "3️⃣ Piyasada test ediliyor...\n\n"
-            "⏳ _Lütfen 5-15 saniye bekleyin, gerçek satış odaklı anahtar kelimeler oluşturuluyor..._",
+            "💡 *Pop Kültür Radar Aktif*\n\n"
+            "1️⃣ Anime (Jikan/ANN/MAL) taranıyor...\n"
+            "2️⃣ Film & Dizi (Variety/TVLine) taranıyor...\n"
+            "3️⃣ Spor (ESPN), Müzik (Billboard), Oyun (IGN) taranıyor...\n"
+            "4️⃣ Roblox Catalog canlı verisi çekiliyor...\n\n"
+            "⏳ _Lütfen 10-20 saniye bekleyin..._" + (" 🔄" if force else ""),
             parse_mode="Markdown"
         )
         try:
             from scrapers.trend_engine import TrendEngine
-            
             engine = TrendEngine(db_manager)
-            trends = await engine.get_suggestions()
-            
+            trends = await engine.get_suggestions(force_refresh=force)
+
             if not trends:
                 await q.edit_message_text(
-                    "❌ *Roblox'ta kanıtlanmış satış hacmi olan yeni bir konu bulunamadı.*\n\n"
-                    "_Biraz sonra tekrar dene._",
+                    "❌ *Şu an trend tespit edilemedi.*\n\n_Biraz sonra tekrar dene._",
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("↩️ Tekrar Tara", callback_data="trends_suggestions")],
+                        [InlineKeyboardButton("↩️ Yeniden Tara", callback_data="trends_refresh")],
                         [InlineKeyboardButton("🏠 Ana Menü", callback_data="main")]
                     ]),
                     parse_mode="Markdown"
                 )
                 return
 
-            def fmt(n):
-                if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
-                if n >= 1_000: return f"{n/1_000:.1f}K"
-                return str(n)
-
-            msg = "🔥 *ROBLOX SATIŞ KANITLI EN POPÜLER 5 TREND*\n"
-            msg += "_Akıllı Motor: Veriler filtrelendi, dönüştürüldü ve hacimleri doğrulandı:_\n\n"
-            kb_rows = []
-
-            for i, item in enumerate(trends, 1):
-                kw = item["kw"]
-                favs = fmt(item["favorites"])
-                sample = item["sample_item"]
-                clicks = item.get("clicks", 0)
-                click_warn = f" (🔥 {clicks} Kez Üretildi)" if clicks > 0 else ""
-                
-                msg += f"*{i}. {md_escape(kw)}{click_warn}*\n"
-                msg += f"↳ 🌟 Hacim: `{favs} Favori`\n"
-                msg += f"↳ 👕 Örnek ürün: _{md_escape(sample)}_\n\n"
-                kb_rows.append([InlineKeyboardButton(f"🚀 Üret: {kw}", callback_data=f"run_kw_{kw[:30]}")])
-
-            kb_rows.append([InlineKeyboardButton("↩️ Tekrar Tara (Anlık Yeni)", callback_data="trends_suggestions")])
-            kb_rows.append([InlineKeyboardButton("🏠 Ana Menü", callback_data="main")])
-
-            await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb_rows), parse_mode="Markdown")
+            # Sayfalama için tüm sonuçları user_data'ya sakla
+            ctx.user_data["trends_all"] = trends
+            ctx.user_data["trends_page"] = 0
+            await _send_trends_page(q, ctx)
 
         except Exception as e:
             Logger.error(f"Trends error: {e}")
-            await q.edit_message_text(f"❌ Hata: `{md_escape(str(e))}`", reply_markup=back_keyboard(), parse_mode="Markdown")
+            await q.edit_message_text(
+                f"❌ Hata: `{md_escape(str(e))}`",
+                reply_markup=back_keyboard(),
+                parse_mode="Markdown"
+            )
+
+    elif data.startswith("trends_page_"):
+        # Sayfa geçişi (trends_page_0, trends_page_1, trends_page_2 ...)
+        page = int(data.split("_")[-1])
+        ctx.user_data["trends_page"] = page
+        await _send_trends_page(q, ctx)
 
     elif data.startswith("run_kw_"):
         # Direct keyword run from popular keywords
