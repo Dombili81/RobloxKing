@@ -206,13 +206,15 @@ class TrendEngine:
                 },
                 timeout=5,
             )
+            if resp.status_code == 429:
+                return -1 # Rate limit
+                
             if resp.status_code != 200:
                 return 0
             data = resp.json()
-            # totalResults varsa kullan, yoksa data listesinin uzunluğuna bak
             return data.get("totalResults", len(data.get("data", [])))
         except Exception:
-            return 0
+            return -1
 
     # ══════════════════════════════════════════════════════════════════════
     # ADIM 3: Ana Algoritma
@@ -245,11 +247,16 @@ class TrendEngine:
         scored: list[dict] = []
         for entity in candidates:
             roblox_count = self._check_roblox_demand(entity["name"])
-            if roblox_count == 0:
-                # Roblox'ta hiç yoksa düşük puanla yine de ekle (potansiyel fırsat)
+            
+            if roblox_count == -1:
+                # Rate limit (429) veya hata - Roblox sorgusu başarısız ama konu gerçekten popüler.
+                # Tahmini bir değer atayarak konunun top listesinden düşmemesini sağlıyoruz.
+                roblox_factor = 2.5
+            elif roblox_count == 0:
+                # Roblox'ta hiç yoksa düşük puanla yine de ekle (potansiyel yeni fırsat)
                 roblox_factor = 0.5
             else:
-                # log scale: 1 ürün=0, 10 ürün=2.3, 100 ürün=4.6, 1000 ürün=6.9
+                # log scale: 1 ürün=0.69, 10 ürün=2.39, 100 ürün=4.6
                 roblox_factor = math.log(roblox_count + 1)
 
             score = entity["weight"] * roblox_factor
@@ -304,7 +311,10 @@ class TrendEngine:
             extra_parts = []
             if item.get("extra"):
                 extra_parts.append(item["extra"])
-            if roblox_count < 50:
+                
+            if roblox_count == -1:
+                extra_parts.append("🔥 Popüler Konu")
+            elif roblox_count < 50:
                 extra_parts.append(f"🆕 Az Rakip ({roblox_count} ürün)")
             elif roblox_count < 300:
                 extra_parts.append(f"📦 {roblox_count} ürün")

@@ -111,7 +111,7 @@ class RobloxScraper:
                 params["sortAggregation"] = self.sort_agg
                 
             try:
-                response = self._request_with_retry("GET", url, params=params, timeout=10)
+                response = self._request_with_retry("GET", url, params=params, timeout=20)
                 if response and response.status_code == 200:
                     data = response.json()
                     listings = data.get("data", [])
@@ -192,7 +192,7 @@ class RobloxScraper:
                 params["sortAggregation"] = self.sort_agg
                 
             try:
-                response = self._request_with_retry("GET", url, params=params, timeout=10)
+                response = self._request_with_retry("GET", url, params=params, timeout=20)
                 if response and response.status_code == 200:
                     data = response.json()
                     listings = data.get("data", [])
@@ -252,7 +252,7 @@ class RobloxScraper:
             r = self._request_with_retry(
                 "GET",
                 f"https://economy.roblox.com/v2/assets/{shirt_asset_id}/details",
-                timeout=10,
+                timeout=20,
             )
             if not r or r.status_code != 200:
                 code = r.status_code if r else "Timeout"
@@ -296,7 +296,7 @@ class RobloxScraper:
                 # Use catalog endpoint if auth available, otherwise fallback to economy v2 (with delay)
                 if self.has_auth:
                     body = {"items": [{"itemType": "Asset", "id": linked_id}]}
-                    r2 = self.session.post("https://catalog.roblox.com/v1/catalog/items/details", json=body, timeout=10)
+                    r2 = self.session.post("https://catalog.roblox.com/v1/catalog/items/details", json=body, timeout=20)
                     if r2.status_code == 200:
                         data = r2.json().get("data", [])
                         if data:
@@ -321,7 +321,7 @@ class RobloxScraper:
                 else:
                     # Fallback
                     time.sleep(1.5)
-                    r2 = self.session.get(f"https://economy.roblox.com/v2/assets/{linked_id}/details", timeout=10)
+                    r2 = self.session.get(f"https://economy.roblox.com/v2/assets/{linked_id}/details", timeout=20)
                     if r2.status_code == 200:
                         item = r2.json()
                         asset_type = item.get("AssetTypeId")
@@ -347,7 +347,7 @@ class RobloxScraper:
         """Katalog eşyası için thumbnail URL'si alır."""
         url = f"https://thumbnails.roblox.com/v1/assets?assetIds={asset_id}&size=420x420&format=Png&isCircular=false"
         try:
-            r = self.session.get(url, timeout=10)
+            r = self.session.get(url, timeout=20)
             if r.status_code == 200:
                 data = r.json().get("data", [])
                 if data:

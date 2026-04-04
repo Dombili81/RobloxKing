@@ -1,0 +1,93 @@
+9: from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+195: [InlineKeyboardButton("🚀  İş Başlat",  callback_data="run"),
+196: InlineKeyboardButton("📊  Durum",       callback_data="status")],
+197: [InlineKeyboardButton("⚙️  Ayarlar",     callback_data="settings"),
+198: InlineKeyboardButton("📈  Satışlar",    callback_data="finance")],
+199: [InlineKeyboardButton("📦  Son Yüklemeler", callback_data="recent_uploads"),
+200: InlineKeyboardButton("💡  Öneriler", callback_data="trends_suggestions")],
+201: [InlineKeyboardButton("🎲  3D Model Oluştur", callback_data="model3d_menu")],
+202: [InlineKeyboardButton("🛑  Durdur",      callback_data="stop"),
+203: InlineKeyboardButton("❓  Yardım",      callback_data="help")],
+235: [InlineKeyboardButton(f"💰  Fiyat: {price} Robux",   callback_data="set_price")],
+236: [InlineKeyboardButton(f"🏷  Grup ID: {group}",       callback_data="set_group")],
+237: [InlineKeyboardButton(f"🎯  {target_label}: {TARGET_PAIRS}", callback_data="set_pairs")],
+238: [InlineKeyboardButton(f"🔑  Cookie: {cookie_str}",       callback_data="set_cookie")],
+239: [InlineKeyboardButton(f"🔐  Onay Gerekli: {approval_str}", callback_data="toggle_approval")],
+240: [InlineKeyboardButton(f"👕  Mod: {mode_str}",           callback_data="set_pair_mode")],
+246: kb.append([InlineKeyboardButton(f"👔  Tekli Tip: {type_str}", callback_data="toggle_single_type")])
+248: kb.append([InlineKeyboardButton(f"📦  3D UGC İndirme Aktif (Upload Yapılmaz)", callback_data="none")])
+250: kb.append([InlineKeyboardButton(f"🧭  Sıralama: {sort_label}",      callback_data="set_sort")])
+251: kb.append([InlineKeyboardButton("⬅️  Ana Menü",                 callback_data="main")])
+257: [InlineKeyboardButton("⬅️  Ana Menü", callback_data="main")]
+262: [InlineKeyboardButton("🚀  İş Başlatma",   callback_data="help_run"),
+263: InlineKeyboardButton("⚙️  Ayarlar",       callback_data="help_settings")],
+264: [InlineKeyboardButton("📊  Durum & Durdur", callback_data="help_status"),
+265: InlineKeyboardButton("🔑  Cookie",        callback_data="help_cookie")],
+266: [InlineKeyboardButton("⬅️  Ana Menü",      callback_data="main")],
+329: kb_rows.append([InlineKeyboardButton(f"🚀 Üret: {kw}", callback_data=f"run_kw_{kw[:30]}")])
+334: nav_row.append(InlineKeyboardButton("⬅️ Önceki", callback_data=f"trends_page_{page-1}"))
+336: nav_row.append(InlineKeyboardButton("➡️ Sonraki", callback_data=f"trends_page_{page+1}"))
+340: kb_rows.append([InlineKeyboardButton("🔄 Taze Veri Çek", callback_data="trends_refresh")])
+341: kb_rows.append([InlineKeyboardButton("🏠 Ana Menü", callback_data="main")])
+383: await q.edit_message_text("❌ Bu sayfada sonuç bulunamadı.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Önceki", callback_data=f"recent_uploads_{page-1}")]]), parse_mode="Markdown")
+429: kb_rows.append([InlineKeyboardButton(btn_name, callback_data=f"preview_{r_id}_{page}")])
+438: nav_row.append(InlineKeyboardButton("⬅️ Önceki Sayfa", callback_data=f"recent_uploads_{page-1}"))
+440: nav_row.append(InlineKeyboardButton("Sonraki Sayfa ➡️", callback_data=f"recent_uploads_{page+1}"))
+444: kb_rows.append([InlineKeyboardButton("🏠 Ana Menü", callback_data="main")])
+548: reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"recent_uploads_{page}")]])
+553: reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"recent_uploads_{page}")]])
+561: reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"recent_uploads_{page}")]])
+574: [InlineKeyboardButton("✍️  Metin ile Oluştur", callback_data="model3d_text")],
+575: [InlineKeyboardButton("🖼️  Görsel ile Oluştur", callback_data="model3d_image")],
+576: [InlineKeyboardButton("⬅️  Ana Menü", callback_data="main")],
+630: [InlineKeyboardButton("↩️ Yeniden Tara", callback_data="trends_refresh")],
+631: [InlineKeyboardButton("🏠 Ana Menü", callback_data="main")]
+861: [InlineKeyboardButton(f"👕 Shirt", callback_data=f"edit_sel_s_{unique_id}"),
+862: InlineKeyboardButton(f"👖 Pants", callback_data=f"edit_sel_p_{unique_id}")],
+863: [InlineKeyboardButton("⬅️ Vazgeç", callback_data=f"refresh_{unique_id}")]
+883: [InlineKeyboardButton("✏️ Başlığı Düzenle", callback_data=f"edit_name_{unique_id}")],
+884: [InlineKeyboardButton("📜 Açıklamayı Düzenle", callback_data=f"edit_desc_{unique_id}")],
+885: [InlineKeyboardButton("⬅️ Vazgeç", callback_data=f"refresh_{unique_id}")]
+912: [InlineKeyboardButton("✏️ Adı Düzenle", callback_data=f"edit_{asset_prefix}_name_{unique_id}"),
+913: InlineKeyboardButton("📜 Açıklamayı Düzenle", callback_data=f"edit_{asset_prefix}_desc_{unique_id}")],
+914: [InlineKeyboardButton("⬅️ Geri", callback_data=f"edit_menu_{unique_id}")]
+1059: [InlineKeyboardButton("🎩  Hair (Saç)", callback_data="ugc_cat_41"), InlineKeyboardButton("🧢  Hat (Şapka)", callback_data="ugc_cat_8")],
+1060: [InlineKeyboardButton("😎  Face (Yüz)", callback_data="ugc_cat_42"), InlineKeyboardButton("🧣  Neck (Boyun)", callback_data="ugc_cat_43")],
+1061: [InlineKeyboardButton("💪  Shoulder (Omuz)", callback_data="ugc_cat_44"), InlineKeyboardButton("👕  Front (Ön)", callback_data="ugc_cat_45")],
+1062: [InlineKeyboardButton("🎒  Back (Sırt)", callback_data="ugc_cat_46"), InlineKeyboardButton("👖  Waist (Bel)", callback_data="ugc_cat_47")],
+1063: [InlineKeyboardButton("⬅️  İptal", callback_data="main")]
+1325: [InlineKeyboardButton("🎲 Yeni Model", callback_data="model3d_menu"),
+1326: InlineKeyboardButton("🏠 Ana Menü", callback_data="main")]
+1355: [InlineKeyboardButton("🔄 Tekrar Dene", callback_data="model3d_text"),
+1356: InlineKeyboardButton("🏠 Ana Menü", callback_data="main")]
+1541: [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
+1542: InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}")],
+1543: [InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
+1544: [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")]
+1547: kb_buttons.append([InlineKeyboardButton("⬅️ Geri Dön (Set)", callback_data=f"back_{unique_id}")])
+1549: kb_buttons.append([InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")])
+1674: [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
+1675: InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
+1676: [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")] +
+1677: ([InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"back_{unique_id}")] if _pending_items[unique_id]["history"] else []),
+1678: [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
+1679: InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
+1685: [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
+1686: InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
+1687: [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")],
+1688: [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
+1689: InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
+1730: [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
+1731: InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
+1732: [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_{unique_id}")] +
+1733: ([InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"back_{unique_id}")] if has_hist else []),
+1734: [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
+1735: InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
+1827: [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}")],
+1828: [InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}"),
+1829: InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}")],
+1830: [InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
+2018: [InlineKeyboardButton("🎲 Yeni Model", callback_data="model3d_menu"),
+2019: InlineKeyboardButton("🏠 Ana Menü", callback_data="main")]
+2049: [InlineKeyboardButton("🔄 Tekrar Dene", callback_data="model3d_image"),
+2050: InlineKeyboardButton("🏠 Ana Menü", callback_data="main")]

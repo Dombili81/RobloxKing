@@ -55,6 +55,7 @@ def load_roblox_config(path="config.txt"):
         "REQUIRE_APPROVAL": int(os.environ.get("REQUIRE_APPROVAL", 0)),
         "PAIR_MODE": os.environ.get("PAIR_MODE", "pair"),
         "SINGLE_TYPE": int(os.environ.get("SINGLE_TYPE", 11)),
+        "UGC_CAT": int(os.environ.get("UGC_CAT", 8)),
     }
     
     # 1. Local file (overwrites Env Vars)
@@ -96,6 +97,11 @@ def load_roblox_config(path="config.txt"):
             cfg["SINGLE_TYPE"] = int(cloud_settings["SINGLE_TYPE"])
         except ValueError:
             pass
+    if "UGC_CAT" in cloud_settings:
+        try:
+            cfg["UGC_CAT"] = int(cloud_settings["UGC_CAT"])
+        except ValueError:
+            pass
             
     global TARGET_PAIRS
     if "TARGET_PAIRS" in cfg:
@@ -112,6 +118,8 @@ def save_roblox_config(cfg, path="config.txt"):
         db_manager.save_setting("PAIR_MODE", cfg["PAIR_MODE"])
     if "SINGLE_TYPE" in cfg:
         db_manager.save_setting("SINGLE_TYPE", cfg["SINGLE_TYPE"])
+    if "UGC_CAT" in cfg:
+        db_manager.save_setting("UGC_CAT", cfg["UGC_CAT"])
 
     with open(path, "w") as f:
         f.write(
@@ -125,6 +133,7 @@ def save_roblox_config(cfg, path="config.txt"):
             f"REQUIRE_APPROVAL={cfg['REQUIRE_APPROVAL']}\n"
             f"PAIR_MODE={cfg['PAIR_MODE']}\n"
             f"SINGLE_TYPE={cfg['SINGLE_TYPE']}\n"
+            f"UGC_CAT={cfg['UGC_CAT']}\n"
         )
 
 def load_cookie(path="cookie.txt"):
@@ -198,7 +207,6 @@ def main_menu_keyboard():
          InlineKeyboardButton("📈  Satışlar",    callback_data="finance")],
         [InlineKeyboardButton("📦  Son Yüklemeler", callback_data="recent_uploads"),
          InlineKeyboardButton("💡  Öneriler", callback_data="trends_suggestions")],
-        [InlineKeyboardButton("🎲  3D Model Oluştur", callback_data="model3d_menu")],
         [InlineKeyboardButton("🛑  Durdur",      callback_data="stop"),
          InlineKeyboardButton("❓  Yardım",      callback_data="help")],
     ])
@@ -245,7 +253,11 @@ def settings_keyboard():
         type_str = "Shirt" if single_type == 11 else "Pants"
         kb.append([InlineKeyboardButton(f"👔  Tekli Tip: {type_str}", callback_data="toggle_single_type")])
     elif pair_mode == "ugc":
-        kb.append([InlineKeyboardButton(f"📦  3D UGC İndirme Aktif (Upload Yapılmaz)", callback_data="none")])
+        cat_map = {8: "Hat", 41: "Hair", 42: "Face", 43: "Neck", 44: "Shoulder", 45: "Front", 46: "Back", 47: "Waist"}
+        cur_cat = cfg.get("UGC_CAT", 8)
+        cat_name = cat_map.get(cur_cat, "Hat")
+        kb.append([InlineKeyboardButton(f"📦  UGC Kategorisi: {cat_name}", callback_data="set_ugc_cat_menu")])
+        kb.append([InlineKeyboardButton(f"ℹ️  3D Modda Sadece İndirme Yapılır", callback_data="none")])
         
     kb.append([InlineKeyboardButton(f"🧭  Sıralama: {sort_label}",      callback_data="set_sort")])
     kb.append([InlineKeyboardButton("⬅️  Ana Menü",                 callback_data="main")])
@@ -259,10 +271,12 @@ def back_keyboard():
 
 def help_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚀  İş Başlatma",   callback_data="help_run"),
-         InlineKeyboardButton("⚙️  Ayarlar",       callback_data="help_settings")],
-        [InlineKeyboardButton("📊  Durum & Durdur", callback_data="help_status"),
-         InlineKeyboardButton("🔑  Cookie",        callback_data="help_cookie")],
+        [InlineKeyboardButton("🚀  İşletim",     callback_data="help_run"),
+         InlineKeyboardButton("⚙️  Ayarlar",    callback_data="help_settings")],
+        [InlineKeyboardButton("👔  Modlar",      callback_data="help_modes"),
+         InlineKeyboardButton("📈  Finans",      callback_data="help_finance")],
+        [InlineKeyboardButton("💡  Trendler",    callback_data="help_trends"),
+         InlineKeyboardButton("🔑  Güvenlik",    callback_data="help_cookie")],
         [InlineKeyboardButton("⬅️  Ana Menü",      callback_data="main")],
     ])
 
@@ -514,11 +528,34 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             
             if thumb_url:
-                await update.effective_chat.send_photo(
-                    photo=thumb_url,
-                    caption=caption,
-                    parse_mode="Markdown"
-                )
+                import io
+                import requests
+                
+                # Telegram, Roblox CDN URL'lerini doğrudan açmakta sorun yaşayabilir. 
+                # (URL sonu .png ile bitmediği için hata verir veya indirmez).
+                # Bu yüzden kendimiz indirip buffer olarak atıyoruz.
+                try:
+                    img_resp = await asyncio.to_thread(lambda: requests.get(thumb_url, timeout=5))
+                    img_data = img_resp.content if img_resp.status_code == 200 else None
+                except Exception as e:
+                    Logger.warn(f"Resim indirme hatası: {e}")
+                    img_data = None
+                    
+                if img_data:
+                    bio = io.BytesIO(img_data)
+                    bio.name = "preview.png"
+                    await update.effective_chat.send_photo(
+                        photo=bio,
+                        caption=caption,
+                        parse_mode="Markdown"
+                    )
+                else:
+                    # Fallback URL doğrudan gönderim
+                    await update.effective_chat.send_photo(
+                        photo=thumb_url,
+                        caption=caption,
+                        parse_mode="Markdown"
+                    )
                 await q.message.delete()
                 await update.effective_chat.send_message(
                     "⬅️ Listeye Geri Dön",
@@ -593,6 +630,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "3️⃣ Spor (ESPN), Müzik (Billboard), Oyun (IGN) taranıyor...\n"
             "4️⃣ Roblox Catalog canlı verisi çekiliyor...\n\n"
             "⏳ _Lütfen 10-20 saniye bekleyin..._" + (" 🔄" if force else ""),
+            reply_markup=back_keyboard(),
             parse_mode="Markdown"
         )
         try:
@@ -706,10 +744,53 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"{group_text}\n\n"
                 f"_Anlık satış bildirimleri arkaplanda aktiftir._"
             )
-            await q.edit_message_text(text, reply_markup=back_keyboard(), parse_mode="Markdown")
+            finance_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📊 Detaylı Analiz Getir", callback_data="finance_analysis")],
+                [InlineKeyboardButton("⬅️ Ana Menü", callback_data="main")]
+            ])
+            await q.edit_message_text(text, reply_markup=finance_kb, parse_mode="Markdown")
         except Exception as e:
             Logger.error(f"Finans Hata: {e}")
             await q.edit_message_text(f"❌ *Bağlantı Hatası:*\n`{md_escape(str(e))}`\n_Cookie güncellemeyi dene._", reply_markup=back_keyboard(), parse_mode="Markdown")
+
+    # ── Finans Detaylı Analiz ──
+    elif data == "finance_analysis":
+        cfg = load_roblox_config()
+        cookie = load_cookie()
+        gid = cfg.get("GROUP_ID")
+        
+        await q.edit_message_text("🔍 *Son 100 işlem analiz ediliyor...*", parse_mode="Markdown")
+        try:
+            monitor = GroupFinanceMonitor(cookie, gid)
+            data = await asyncio.to_thread(monitor.get_detailed_analysis)
+            
+            if "error" in data:
+                await q.edit_message_text(f"❌ *Hata:*\n`{md_escape(data['error'])}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Geri Dön", callback_data="finance")]]), parse_mode="Markdown")
+                return
+                
+            top_str = ""
+            for i, (name, stats) in enumerate(data.get("top_items", [])):
+                top_str += f"{i+1}. `{md_escape(name[:40])}` - **{stats['count']} Adet** ({stats['robux']} R$)\n"
+            
+            if not top_str:
+                top_str = "_Son işlemlerde kayda değer bir satış görünmüyor._"
+            
+            text = (
+                f"📊 *GRUP SATIŞ ANALİZİ*\n\n"
+                f"🛍️ **İncelenen Toplam İşlem:** `{data['tx_count']}`\n"
+                f"💸 **Son İşlemlerin Cirosu:** `{data['total_robux_100']} R$`\n\n"
+                f"🏆 **En Çok Satan 5 Ürün:**\n{top_str}\n"
+                f"💡 **Tavsiye:**\n_{data['insight']}_\n"
+            )
+            
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Yenile", callback_data="finance_analysis")],
+                [InlineKeyboardButton("⬅️ Geri Dön", callback_data="finance")]
+            ])
+            await q.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        except Exception as e:
+            Logger.error(f"Finans Analiz Hata: {e}")
+            await q.edit_message_text(f"❌ Hata: `{md_escape(str(e))}`", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Geri Dön", callback_data="finance")]]), parse_mode="Markdown")
 
     # ── Ayarlar ──
     elif data == "settings":
@@ -806,20 +887,41 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if new_mode == "pair":
             mode_desc = "Çift Mod (Shirt+Pants)"
         elif new_mode == "single":
-            mode_desc = "Tekli Mod (Sadece Shirt/Pants)"
+            mode_desc = "Tekli Mod (Single Asset)"
         else:
-            mode_desc = "3D UGC Mod (3D Asset İndirme)"
+            mode_desc = "3D UGC Mod (3D Aksesuar İndirme \u2013 Sadece İndirme)"
             
         await q.edit_message_text(
             f"👕 *Yükleme Modu*\n\n"
             f"Yeni mod: **{mode_desc}**\n\n"
-            f"• *Çift Mod:* Shirt bulduktan sonra eşleşen pants'ı arar ve ikisini birlikte yükler.\n"
-            f"• *Tekli Mod:* Sadece seçilen tipteki kıyafetleri bulur ve tek tek yükler.\n"
-            f"• *3D UGC Mod:* Aksesuar 3D modellerini (.obj ve texture) indirip .zip olarak verir. Yükleme YAPMAZ.\n\n"
+            f"• *Çift Mod:* Eşleşen Shirt ve Pants çiftini bulup yükler.\n"
+            f"• *Tekli Mod:* Sadece seçilen tipteki kıyafeti bulup yükler.\n"
+            f"• *3D UGC Mod:* Aksesuar modellerini indirip .zip olarak hazırlar. Yükleme yapılmaz.\n\n"
             f"Ayarlar kaydedildi. Ana menüye dönüyorsunuz…",
             reply_markup=settings_keyboard(),
             parse_mode="Markdown"
         )
+
+    elif data == "set_ugc_cat_menu":
+        cat_map = {
+            8: "🎩 Hat", 41: "💇 Hair", 42: "🎭 Face", 43: "🧣 Neck",
+            44: "🎖 Shoulder", 45: "🛡 Front", 46: "🎒 Back", 47: "ベルト Waist"
+        }
+        kb = []
+        for cat_id, name in cat_map.items():
+            kb.append([InlineKeyboardButton(name, callback_data=f"save_ugc_cat_{cat_id}")])
+        kb.append([InlineKeyboardButton("⬅️ Geri", callback_data="settings")])
+        await q.edit_message_text("📦 *3D UGC Kategori Seçimi*", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+
+    elif data.startswith("save_ugc_cat_"):
+        cat_id = int(data.split("_")[-1])
+        cfg = load_roblox_config()
+        cfg["UGC_CAT"] = cat_id
+        save_roblox_config(cfg)
+        await q.answer("UGC Kategorisi Kaydedildi ✅")
+        # Go back to settings
+        await q.edit_message_text("⚙️ *Ayarlar*\nDeğiştirmek istediğin ayara tıkla:", reply_markup=settings_keyboard(), parse_mode="Markdown")
+
 
     # ── Onay callbacks ──
     elif data.startswith("edit_menu_"):
@@ -1074,16 +1176,12 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     elif data == "help_run":
         await q.edit_message_text(
-            "🚀 *İş Başlatma*\n\n"
-            "1. Ana menüden *İş Başlat*'a bas\n"
-            "2. Arama kelimesini yaz (örn: `spiderman`)\n"
-            "3. Bot otomatik olarak:\n"
-            "   • Kıyafetleri Roblox'ta arar\n"
-            "   • Eşleşen shirt+pants çiftlerini bulur\n"
-            "   • Tasarım şablonu ekler\n"
-            "   • Grubuna yükler ve satışa koyar\n"
-            "   • Shirt'in açıklamasına pantolon linkini, pantolonun açıklamasına da shirt linkini ekler\n\n"
-            "🎯 *Hedef çift sayısını* /pairs ile değiştirebilirsin.",
+            "🚀 *İşletim & İş Akışı*\n\n"
+            "• *Başlatma:* Ana menüden 'İş Başlat'a basın, bir anahtar kelime (örn: y2k, aesthetic) yazın. Bot aramayı başlatacaktır.\n"
+            "• *🔍 Yenisini Bul (Skip):* Botun bulduğu ürünü beğenmezseniz bu tuşa basarak bir sonrakine geçebilirsiniz.\n"
+            "• *⬅️ Geri Dön (Back):* Az önce geçtiğiniz veya reddettiğiniz bir önceki ürüne geri dönerek onu tekrar inceleyebilir veya onaylayabilirsiniz.\n"
+            "• *📊 Durum:* Çalışan işin kaç ürün taradığını ve kaç tanesini başarıyla yüklediğini gösterir.\n"
+            "• *🛑 Durdur:* Tüm aramayı ve işlem döngüsünü güvenli bir şekilde sonlandırır.",
             reply_markup=help_keyboard(), parse_mode="Markdown"
         )
 
@@ -1114,22 +1212,45 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=help_keyboard(), parse_mode="Markdown"
         )
 
+    elif data == "help_modes":
+        await q.edit_message_text(
+            "👔 *Çalışma Modları Rehberi*\n\n"
+            "Bot 3 farklı modda çalışabilir:\n\n"
+            "1️⃣ *Çift Mod (Pair):* \n"
+            "En popüler moddur. Bot bir Shirt bulduğunda ona tam uyumlu olan Pants'i de arar ve ikisini beraber yükler. Açıklamalarda birbirine link verme (cross-link) otomatik yapılır.\n\n"
+            "2️⃣ *Tekli Mod (Single):* \n"
+            "Sadece seçilen tipte (yalnızca Shirt veya yalnızca Pants) arama yapar ve tek tek yükler.\n\n"
+            "3️⃣ *3D UGC Mod (Aksesuar):* \n"
+            "Katalogdaki 3D aksesuarları (Şapka, Saç vb.) bulur ve `.zip` olarak size sunar. Bu modda yükleme yapılmaz, sadece dosya teslim edilir.",
+            reply_markup=help_keyboard(), parse_mode="Markdown"
+        )
+
+    elif data == "help_finance":
+        await q.edit_message_text(
+            "📈 *Finans & Satış Takibi*\n\n"
+            "• *Robux Hesabı:* Bot, grubun son 100 işlemini tarayarak 'Bugünkü Net Ciro'yu hesaplar.\n"
+            "• *Bekleyen (Pending):* Satılan ürünlerin Robux'u Roblox tarafından 3-7 gün bekletilir. Bot bu bakiyeyi ayrıca gösterir.\n"
+            "• *📊 Detaylı Analiz:* Son satışları analiz ederek en çok satan ürünleri ve hangi tarzların (Y2K, Gothic vb.) popüler olduğunu listeleyen bir AI raporu sunar.",
+            reply_markup=help_keyboard(), parse_mode="Markdown"
+        )
+
+    elif data == "help_trends":
+        await q.edit_message_text(
+            "💡 *Trend Önerileri & Analiz*\n\n"
+            "• *Öneriler:* Roblox katalog verilerini tarayarak o an trend olan anahtar kelimeleri ve taksonomi önerilerini sunar.\n"
+            "• *Strateji:* Öneriler butonunu kullanarak botun bulduğu kelimelerle iş başlatırsanız, satış yapma ihtimaliniz artar.\n"
+            "• *Kelime Seçimi:* Aramada tek kelime (örn: 'red') yerine daha spesifik (örn: 'blue y2k aesthetic') kelimeler kullanmanızı öneririz.",
+            reply_markup=help_keyboard(), parse_mode="Markdown"
+        )
+
     elif data == "help_cookie":
         await q.edit_message_text(
-            "🔑 *Cookie Hakkında*\n\n"
-            "Cookie, Roblox hesabına giriş yapmak için kullanılan oturum token'ı.\n\n"
-            "📌 *Nasıl alınır?*\n"
-            "1. Roblox'a giriş yap\n"
-            "2. Tarayıcıda `F12` → `Application` sekmesi\n"
-            "3. `Cookies` → `.ROBLOSECURITY` değerini kopyala\n"
-            "4. Bu bottan Ayarlar → Cookie'ye yapıştır\n\n"
-            "🕐 *Ne zaman yenilemem lazım?*\n"
-            "Sabit bir süre yok. Cookie şu durumlarda düşer:\n"
-            "• Şifre değiştirdiğinde\n"
-            "• \"Tüm cihazlardan çıkış\" yaptığında\n"
-            "• Roblox uzun süre kullanılmayınca oturumu sonlandırırsa\n"
-            "• Bot \"indirilemedi\" / 401 hatası verince\n\n"
-            "Yani sadece _hata aldığında_ veya güvenlik işlemi yaptığında yenilemen yeterli.",
+            "🔑 *Cookie & Güvenlik*\n\n"
+            "📌 *Cookie Nasıl Alınır?*\n"
+            "1. Tarayıcıda Roblox'a girin.\n"
+            "2. `F12` -> `Application` -> `Cookies`.\n"
+            "3. `.ROBLOSECURITY` değerinin tamamını kopyalayıp bot ayarlarından girin.\n\n"
+            "⚠️ *Güvenlik:* Bot şifrenizi tutmaz. Hesabınızın güvenliği için bu kodu kimseyle paylaşmayın. Şifre değiştirirseniz cookie geçersiz kalır.",
             reply_markup=help_keyboard(), parse_mode="Markdown"
         )
 
@@ -1345,7 +1466,7 @@ async def start_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE, keyword_list
     cfg    = load_roblox_config()
     cookie = load_cookie()
     
-    ugc_cat = ctx.user_data.get("ugc_category")
+    ugc_cat = cfg.get("UGC_CAT", 8)
 
     target_label = "çift" if cfg.get('PAIR_MODE', 'pair') == 'pair' else "item"
     if cfg.get('PAIR_MODE') == 'ugc': target_label = "3D asset"
@@ -1557,6 +1678,9 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                             })
                                         await send("⬅️ *Önceki çift geri yüklendi.*")
                                         # Reset preview_msg so it re-sends photos
+                                        if preview_msg:
+                                            try: await preview_msg.delete()
+                                            except: pass
                                         preview_msg = None
                                         
                                         # Re-send media group
@@ -1716,9 +1840,26 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                         if status == "back" and preview_msg: # If item changed, edit media
                                             from telegram import InputMediaPhoto
                                             with open(out_path, "rb") as f_img:
-                                                await preview_msg.edit_media(InputMediaPhoto(f_img, caption=caption, parse_mode="Markdown"), reply_markup=kb)
+                                                try:
+                                                    await preview_msg.edit_media(InputMediaPhoto(f_img, caption=caption, parse_mode="Markdown"), reply_markup=kb)
+                                                except Exception as edit_err:
+                                                    Logger.warn(f"edit_media failed, re-sending: {edit_err}")
+                                                    # If edit fails, send new then update preview_msg
+                                                    f_img.seek(0)
+                                                    new_msg = await update.effective_message.reply_photo(photo=f_img, caption=caption, reply_markup=kb, parse_mode="Markdown")
+                                                    try: await preview_msg.delete() # Try to clean up the stuck one
+                                                    except: pass
+                                                    preview_msg = new_msg
                                         elif preview_msg:
-                                            await preview_msg.edit_caption(caption, reply_markup=kb, parse_mode="Markdown")
+                                            try:
+                                                await preview_msg.edit_caption(caption, reply_markup=kb, parse_mode="Markdown")
+                                            except Exception as edit_err:
+                                                Logger.warn(f"edit_caption failed, re-sending: {edit_err}")
+                                                with open(out_path, "rb") as f_img:
+                                                    new_msg = await update.effective_message.reply_photo(photo=f_img, caption=caption, reply_markup=kb, parse_mode="Markdown")
+                                                    try: await preview_msg.delete()
+                                                    except: pass
+                                                    preview_msg = new_msg
                                     except Exception as e:
                                         Logger.error(f"UI Update error: {e}")
                                     continue

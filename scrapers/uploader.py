@@ -49,7 +49,7 @@ class AssetUploader:
     def _get_csrf_token(self):
         """Fetch a fresh X-CSRF-TOKEN from Roblox auth endpoint."""
         try:
-            r = self.session.post("https://auth.roblox.com/v2/logout", timeout=10)
+            r = self.session.post("https://auth.roblox.com/v2/logout", timeout=20)
             token = r.headers.get("x-csrf-token")
             if token:
                 self._csrf_token = token
@@ -128,7 +128,7 @@ class AssetUploader:
         for _ in range(15):  # Max 15 attempts (approx 30s)
             time.sleep(2)
             try:
-                r = self.session.get(poll_url, timeout=10)
+                r = self.session.get(poll_url, timeout=20)
                 if r.status_code == 200:
                     data = r.json()
                     if data.get("done"):
