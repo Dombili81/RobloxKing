@@ -50,7 +50,9 @@ class GroupFinanceMonitor:
             "item_sales_robux": 0,
             "user_balance": 0,
             "user_name": "Bilinmeyen",
-            "group_error": None
+            "group_error": None,
+            "total_items": 0,
+            "yearly_revenue": 0
         }
 
         # 1. Kullanıcı bakiyesi her zaman alınmalı
@@ -79,10 +81,44 @@ class GroupFinanceMonitor:
                 except Exception:
                     # Hata alırsa standart API değerine dön (fallback)
                     results["item_sales_robux"] = data.get("itemSaleRobux", 0)
+
+            # 3. Yıllık gelir ve Toplam Ürün Sayısı (P/L için)
+            results["yearly_revenue"] = self.get_yearly_revenue()
+            results["total_items"] = self.count_published_items()
+
         except Exception as e:
             results["group_error"] = str(e)
 
         return results
+
+    def get_yearly_revenue(self) -> int:
+        """Grubun son 1 yıllık toplam brüt satış gelirini çeker."""
+        url = f"https://economy.roblox.com/v1/groups/{self.group_id}/revenue/summary/year"
+        try:
+            r = self.session.get(url, timeout=20)
+            r.raise_for_status()
+            return r.json().get("itemSaleRobux", 0)
+        except Exception:
+            return 0
+
+    def count_published_items(self) -> int:
+        """Gruptaki tüm Shirts ve Pants ürünlerini sayar (Cursor ile tarayarak)."""
+        count = 0
+        cursor = ""
+        url = f"https://catalog.roblox.com/v1/search/items?category=Clothing&creatorId={self.group_id}&creatorType=Group&limit=100"
+        
+        try:
+            while True:
+                r = self.session.get(f"{url}&cursor={cursor}" if cursor else url, timeout=20)
+                r.raise_for_status()
+                data = r.json()
+                count += len(data.get("data", []))
+                cursor = data.get("nextPageCursor")
+                if not cursor:
+                    break
+            return count
+        except Exception:
+            return 0
 
     def _calc_today_sales_from_tx(self) -> int:
         """Son işlemleri çekip bugünün gerçek ciro toplamını bulur."""
