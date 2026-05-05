@@ -4,6 +4,7 @@ bot_config.txt
 config.txt
 template.png
 walkthrough.md
+CLAUDE.md
 
 # Python
 __pycache__/
@@ -19,5 +20,7 @@ downloads/*
 !downloads/.gitkeep
 output/*
 !output/.gitkeep
+frames_analysis/*
+!frames_analysis/.gitkeep
 *.log
 firebase-key.json

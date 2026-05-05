@@ -56,6 +56,10 @@ def load_roblox_config(path="config.txt"):
         "PAIR_MODE": os.environ.get("PAIR_MODE", "pair"),
         "SINGLE_TYPE": int(os.environ.get("SINGLE_TYPE", 11)),
         "UGC_CAT": int(os.environ.get("UGC_CAT", 8)),
+        "TIKTOK_ENABLED": int(os.environ.get("TIKTOK_ENABLED", 0)),
+        "TIKTOK_ACCESS_TOKEN": os.environ.get("TIKTOK_ACCESS_TOKEN", ""),
+        "TIKTOK_HASHTAGS": os.environ.get("TIKTOK_HASHTAGS", "roblox,robloxfashion,robloxoutfit"),
+        "TIKTOK_GROUP_NAME": os.environ.get("TIKTOK_GROUP_NAME", "Roblox Group"),
     }
     
     # 1. Local file (overwrites Env Vars)
@@ -102,7 +106,17 @@ def load_roblox_config(path="config.txt"):
             cfg["UGC_CAT"] = int(cloud_settings["UGC_CAT"])
         except ValueError:
             pass
-            
+
+    # TikTok ayarları (cloud'dan)
+    if "TIKTOK_ENABLED" in cloud_settings:
+        try:
+            cfg["TIKTOK_ENABLED"] = int(cloud_settings["TIKTOK_ENABLED"])
+        except ValueError:
+            pass
+    for k in ["TIKTOK_ACCESS_TOKEN", "TIKTOK_HASHTAGS", "TIKTOK_GROUP_NAME"]:
+        if k in cloud_settings and cloud_settings[k]:
+            cfg[k] = str(cloud_settings[k])
+
     global TARGET_PAIRS
     if "TARGET_PAIRS" in cfg:
         TARGET_PAIRS = cfg["TARGET_PAIRS"]
@@ -120,6 +134,12 @@ def save_roblox_config(cfg, path="config.txt"):
         db_manager.save_setting("SINGLE_TYPE", cfg["SINGLE_TYPE"])
     if "UGC_CAT" in cfg:
         db_manager.save_setting("UGC_CAT", cfg["UGC_CAT"])
+    # TikTok ayarları
+    if "TIKTOK_ENABLED" in cfg:
+        db_manager.save_setting("TIKTOK_ENABLED", cfg["TIKTOK_ENABLED"])
+    for k in ["TIKTOK_ACCESS_TOKEN", "TIKTOK_HASHTAGS", "TIKTOK_GROUP_NAME"]:
+        if k in cfg:
+            db_manager.save_setting(k, cfg[k])
 
     with open(path, "w") as f:
         f.write(
@@ -260,6 +280,15 @@ def settings_keyboard():
         kb.append([InlineKeyboardButton(f"ℹ️  3D Modda Sadece İndirme Yapılır", callback_data="none")])
         
     kb.append([InlineKeyboardButton(f"🧭  Sıralama: {sort_label}",      callback_data="set_sort")])
+
+    # TikTok bölümü
+    tiktok_on   = cfg.get("TIKTOK_ENABLED", 0) == 1
+    tt_toggle   = "Açık ✅" if tiktok_on else "Kapalı ❌"
+    tt_token    = "Ayarlı ✅" if cfg.get("TIKTOK_ACCESS_TOKEN") else "Yok ❌"
+    kb.append([InlineKeyboardButton(f"🎵  TikTok Paylaşım: {tt_toggle}", callback_data="toggle_tiktok")])
+    kb.append([InlineKeyboardButton(f"🔑  TikTok Token: {tt_token}",     callback_data="set_tiktok_token")])
+    kb.append([InlineKeyboardButton( "📌  TikTok Hashtagler & Grup",     callback_data="set_tiktok_meta")])
+
     kb.append([InlineKeyboardButton("⬅️  Ana Menü",                 callback_data="main")])
 
     return InlineKeyboardMarkup(kb)
@@ -919,9 +948,148 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cfg["UGC_CAT"] = cat_id
         save_roblox_config(cfg)
         await q.answer("UGC Kategorisi Kaydedildi ✅")
-        # Go back to settings
         await q.edit_message_text("⚙️ *Ayarlar*\nDeğiştirmek istediğin ayara tıkla:", reply_markup=settings_keyboard(), parse_mode="Markdown")
 
+    # ── TikTok callbacks ──
+    elif data == "toggle_tiktok":
+        cfg = load_roblox_config()
+        new_val = 0 if cfg.get("TIKTOK_ENABLED", 0) == 1 else 1
+        cfg["TIKTOK_ENABLED"] = new_val
+        save_roblox_config(cfg)
+        status = "AÇIK ✅" if new_val == 1 else "KAPALI ❌"
+        await q.answer(f"TikTok paylaşımı: {status}")
+        await q.edit_message_reply_markup(reply_markup=settings_keyboard())
+
+    elif data == "set_tiktok_token":
+        ctx.user_data["awaiting"] = "tiktok_token"
+        await q.edit_message_text(
+            "🔑 *TikTok Access Token*\n\n"
+            "TikTok Developer Portal'dan aldığın *Access Token*'ı buraya yapıştır.\n\n"
+            "📌 Nasıl alınır?\n"
+            "1. developers.tiktok.com → app oluştur\n"
+            "2. Content Posting API iznini etkinleştir\n"
+            "3. OAuth2 akışından token al\n\n"
+            "_(Başındaki/sonundaki boşluklar olmadan, sadece token değerini gir)_",
+            reply_markup=back_keyboard(), parse_mode="Markdown"
+        )
+
+    elif data == "set_tiktok_meta":
+        cfg = load_roblox_config()
+        cur_tags  = cfg.get("TIKTOK_HASHTAGS", "roblox,robloxfashion")
+        cur_group = cfg.get("TIKTOK_GROUP_NAME", "Roblox Group")
+        await q.edit_message_text(
+            f"📌 *TikTok Meta Ayarları*\n\n"
+            f"Şu an:\n"
+            f"• Hashtagler: `{md_escape(cur_tags)}`\n"
+            f"• Grup adı: `{md_escape(cur_group)}`\n\n"
+            f"Ne değiştirmek istiyorsun?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏷 Hashtagleri Değiştir", callback_data="set_tiktok_hashtags")],
+                [InlineKeyboardButton("🏢 Grup Adını Değiştir",  callback_data="set_tiktok_group")],
+                [InlineKeyboardButton("⬅️ Geri",                 callback_data="settings")],
+            ]),
+            parse_mode="Markdown"
+        )
+
+    elif data == "set_tiktok_hashtags":
+        ctx.user_data["awaiting"] = "tiktok_hashtags"
+        cfg = load_roblox_config()
+        cur = cfg.get("TIKTOK_HASHTAGS", "roblox,robloxfashion")
+        await q.edit_message_text(
+            f"🏷 *TikTok Hashtagler*\n\n"
+            f"Şu an: `{md_escape(cur)}`\n\n"
+            f"Virgülle ayırarak yaz (# işareti olmadan):\n"
+            f"Örn: `roblox,fashion,outfit,aesthetic`",
+            reply_markup=back_keyboard(), parse_mode="Markdown"
+        )
+
+    elif data == "set_tiktok_group":
+        ctx.user_data["awaiting"] = "tiktok_group"
+        cfg = load_roblox_config()
+        cur = cfg.get("TIKTOK_GROUP_NAME", "Roblox Group")
+        await q.edit_message_text(
+            f"🏢 *TikTok'ta Gösterilecek Grup Adı*\n\n"
+            f"Şu an: `{md_escape(cur)}`\n\n"
+            f"Yeni grup adını yaz (videoda alt kısımda görünür):",
+            reply_markup=back_keyboard(), parse_mode="Markdown"
+        )
+
+    # ── Test TikTok callback ──
+    elif data.startswith("test_tiktok_"):
+        unique_id = data[len("test_tiktok_"):]
+        await q.answer("🎬 Video oluşturuluyor, biraz bekle...")
+
+        with _pending_lock:
+            item = _pending_items.get(unique_id)
+
+        if not item:
+            await q.message.reply_text("⚠️ Ürün verisi bulunamadı (süre dolmuş olabilir).")
+            return
+
+        # Pair mi, single mı?
+        if "shirt_path" in item:
+            thumb    = item["shirt_path"]
+            name     = item["metadata"].get("shirt_name", "Roblox Item")
+            shirt_id = str(item.get("shirt_id", ""))
+            pants_id = str(item.get("pants_id", ""))
+        else:
+            thumb    = item.get("path", "")
+            name     = item["metadata"].get("name", "Roblox Item")
+            shirt_id = str(item.get("asset_id", ""))
+            pants_id = None
+
+        cfg_now    = load_roblox_config()
+        price      = cfg_now.get("PRICE", 5)
+        group_name = cfg_now.get("TIKTOK_GROUP_NAME", "Roblox Group")
+        cookie     = load_cookie()
+
+        status_msg = await q.message.reply_text(
+            "⏳ *Test TikTok videosu oluşturuluyor...*\n"
+            f"📝 Item: `{md_escape(name)}`\n"
+            f"💰 Fiyat: `{price} Robux`\n"
+            f"_Roblox render API deneniyor..._",
+            parse_mode="Markdown"
+        )
+
+        try:
+            from scrapers.video_composer import VideoComposer
+            vc         = VideoComposer()
+            video_path = await asyncio.to_thread(
+                vc.compose, thumb, name, price, group_name, shirt_id, pants_id, cookie
+            )
+
+            await status_msg.edit_text("✅ *Video hazır, gönderiliyor...*", parse_mode="Markdown")
+
+            with open(video_path, "rb") as vf:
+                await update.effective_chat.send_video(
+                    video=vf,
+                    caption=(
+                        f"🎬 *Test TikTok Videosu*\n\n"
+                        f"👕 `{md_escape(name)}`\n"
+                        f"💰 `{price} Robux`\n\n"
+                        f"_Bu video gerçek bir TikTok tokeni gelince otomatik yayınlanacak._"
+                    ),
+                    parse_mode="Markdown",
+                    supports_streaming=True,
+                )
+            await status_msg.delete()
+        except FileNotFoundError as e:
+            await status_msg.edit_text(
+                f"⚠️ `tempvid/` klasöründe template .mp4 bulunamadı:\n`{md_escape(str(e))}`",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            Logger.error(f"Test TikTok video hatası: {e}")
+            await status_msg.edit_text(
+                f"❌ *Video oluşturulamadı:*\n`{md_escape(str(e)[:300])}`",
+                parse_mode="Markdown"
+            )
+        finally:
+            if 'video_path' in locals() and os.path.exists(video_path):
+                try:
+                    os.remove(video_path)
+                except Exception:
+                    pass
 
     # ── Onay callbacks ──
     elif data.startswith("edit_menu_"):
@@ -1391,6 +1559,41 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("✅ Sıralama tercihin kaydedildi. Bir sonraki aramada bu sıraya göre aranacak.", reply_markup=settings_keyboard(), parse_mode="Markdown")
 
+    elif awaiting == "tiktok_token":
+        ctx.user_data["awaiting"] = None
+        token_val = text.strip()
+        cfg = load_roblox_config()
+        cfg["TIKTOK_ACCESS_TOKEN"] = token_val
+        save_roblox_config(cfg)
+        await update.message.reply_text(
+            "✅ *TikTok Token kaydedildi!*\n\n"
+            "TikTok paylaşımını açmayı unutma:\n"
+            "_⚙️ Ayarlar → TikTok Paylaşım: Kapalı → tıkla → Açık ✅_",
+            reply_markup=settings_keyboard(), parse_mode="Markdown"
+        )
+
+    elif awaiting == "tiktok_hashtags":
+        ctx.user_data["awaiting"] = None
+        tags = text.strip().replace("#", "")
+        cfg = load_roblox_config()
+        cfg["TIKTOK_HASHTAGS"] = tags
+        save_roblox_config(cfg)
+        await update.message.reply_text(
+            f"✅ *Hashtagler kaydedildi:*\n`{md_escape(tags)}`",
+            reply_markup=settings_keyboard(), parse_mode="Markdown"
+        )
+
+    elif awaiting == "tiktok_group":
+        ctx.user_data["awaiting"] = None
+        group_name = text.strip()[:60]
+        cfg = load_roblox_config()
+        cfg["TIKTOK_GROUP_NAME"] = group_name
+        save_roblox_config(cfg)
+        await update.message.reply_text(
+            f"✅ *Grup adı kaydedildi:* `{md_escape(group_name)}`",
+            reply_markup=settings_keyboard(), parse_mode="Markdown"
+        )
+
     elif awaiting == "model3d_prompt":
         ctx.user_data["awaiting"] = None
         prompt = text
@@ -1483,6 +1686,67 @@ async def start_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE, keyword_list
 
     _job_stop.clear()
     _active_task = asyncio.create_task(job_task(update, ctx, keyword_list, cfg, cookie, ugc_cat))
+
+# ─── TikTok Yayınlama ─────────────────────────────────────────────────────────
+async def _publish_to_tiktok(
+    update, cfg: dict, item_name: str, price: int,
+    thumbnail_path: str, shirt_id: str = None, pants_id: str = None
+):
+    """Başarılı Roblox upload'dan sonra TikTok tanıtım videosu oluşturup yayınlar."""
+    chat = update.effective_chat
+    try:
+        from scrapers.video_composer  import VideoComposer
+        from scrapers.tiktok_publisher import TikTokPublisher
+
+        status_msg = await chat.send_message("🎵 *TikTok videosu hazırlanıyor...*", parse_mode="Markdown")
+
+        group_name = cfg.get("TIKTOK_GROUP_NAME", "Roblox Group")
+        cookie     = load_cookie()
+        composer   = VideoComposer()
+        video_path = await asyncio.to_thread(
+            composer.compose, thumbnail_path, item_name, price, group_name,
+            shirt_id, pants_id, cookie
+        )
+
+        await status_msg.edit_text(
+            "🎵 *Video hazır, TikTok'a yükleniyor...*", parse_mode="Markdown"
+        )
+
+        hashtags = [t.strip() for t in cfg.get("TIKTOK_HASHTAGS", "roblox").split(",") if t.strip()]
+        caption  = f"{item_name} | {price} Robux"
+
+        publisher = TikTokPublisher(cfg["TIKTOK_ACCESS_TOKEN"])
+        result    = await asyncio.to_thread(publisher.publish_video, video_path, caption, hashtags)
+
+        if result["success"]:
+            await status_msg.edit_text(
+                f"✅ *TikTok'a yüklendi!*\n`Share ID: {result.get('share_id', 'N/A')}`",
+                parse_mode="Markdown"
+            )
+        else:
+            await status_msg.edit_text(
+                f"⚠️ *TikTok yüklenemedi:* `{md_escape(str(result.get('error', 'Bilinmeyen')))}`",
+                parse_mode="Markdown"
+            )
+    except FileNotFoundError as e:
+        await chat.send_message(
+            f"⚠️ *TikTok video atlandı:* `{md_escape(str(e))}`\n"
+            f"_`tempvid/` klasörüne .mp4 dosyası ekle._",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        Logger.error(f"TikTok publish hatası: {e}")
+        await chat.send_message(
+            f"⚠️ *TikTok hatası:* `{md_escape(str(e)[:200])}`",
+            parse_mode="Markdown"
+        )
+    finally:
+        if 'video_path' in locals() and video_path and os.path.exists(video_path):
+            try:
+                os.remove(video_path)
+            except Exception:
+                pass
+
 
 # ─── Background job (Async Task) ──────────────────────────────────────────────
 async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_list, cfg, cookie, ugc_cat=None):
@@ -1639,11 +1903,12 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                 [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
                                  InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}")],
                                 [InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
-                                [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")]
+                                [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")],
+                                [InlineKeyboardButton("🎬 Test TikTok Videosu", callback_data=f"test_tiktok_{unique_id}")],
                             ]
                             if has_hist:
                                 kb_buttons.append([InlineKeyboardButton("⬅️ Geri Dön (Set)", callback_data=f"back_{unique_id}")])
-                            
+
                             kb_buttons.append([InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")])
                             
                             kb = InlineKeyboardMarkup(kb_buttons)
@@ -1723,6 +1988,16 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         await send("☁️ Yükleniyor…")
                         upload_count = await upload_pair_with_crosslink(asset_id, shirt_path, pants_id, pants_path, keyword, uploader, upload_count, cfg)
                         _job_info["uploads"] = upload_count
+                        # TikTok tetikleyici (arka planda, upload döngüsünü bloke etmez)
+                        if cfg.get("TIKTOK_ENABLED", 0) == 1 and cfg.get("TIKTOK_ACCESS_TOKEN"):
+                            asyncio.create_task(_publish_to_tiktok(
+                                update, cfg,
+                                item_name=shirt_name,
+                                price=cfg.get("PRICE", 5),
+                                thumbnail_path=shirt_path,
+                                shirt_id=str(asset_id),
+                                pants_id=str(pants_id),
+                            ))
 
             elif pair_mode == "single":
                 single_type = cfg.get("SINGLE_TYPE", 11)
@@ -1776,6 +2051,7 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                          InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
                                         [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")] +
                                         ([InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"back_{unique_id}")] if _pending_items[unique_id]["history"] else []),
+                                        [InlineKeyboardButton("🎬 Test TikTok Videosu", callback_data=f"test_tiktok_{unique_id}")],
                                         [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
                                          InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
                                     ]),
@@ -1786,6 +2062,7 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                 [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
                                  InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
                                 [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")],
+                                [InlineKeyboardButton("🎬 Test TikTok Videosu", callback_data=f"test_tiktok_{unique_id}")],
                                 [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
                                  InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
                             ]))
@@ -1832,6 +2109,7 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                          InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
                                         [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_{unique_id}")] +
                                         ([InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"back_{unique_id}")] if has_hist else []),
+                                        [InlineKeyboardButton("🎬 Test TikTok Videosu", callback_data=f"test_tiktok_{unique_id}")],
                                         [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
                                          InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
                                     ])
@@ -1893,7 +2171,16 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         await send("☁️ Yükleniyor…")
                         upload_count = await upload_single_asset(asset_id, out_path, keyword, uploader, upload_count, cfg, item_type=single_type)
                         _job_info["uploads"] = upload_count
-                        
+                        # TikTok tetikleyici
+                        if cfg.get("TIKTOK_ENABLED", 0) == 1 and cfg.get("TIKTOK_ACCESS_TOKEN"):
+                            asyncio.create_task(_publish_to_tiktok(
+                                update, cfg,
+                                item_name=name,
+                                price=cfg.get("PRICE", 5),
+                                thumbnail_path=out_path,
+                                shirt_id=str(asset_id),
+                            ))
+
             elif pair_mode == "ugc":
                 if not ugc_cat:
                     await send("❌ Hata: UGC kategorisi seçilmemiş.")
