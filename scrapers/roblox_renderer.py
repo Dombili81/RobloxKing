@@ -17,7 +17,12 @@ API_TIMEOUT    = 12
 class RobloxRenderer:
     def __init__(self, cookie: str = None):
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "Mozilla/5.0"})
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.roblox.com/"
+        })
         if cookie:
             self.session.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
 
@@ -75,17 +80,31 @@ class RobloxRenderer:
 
     def _download_png(self, url: str, filename: str) -> str | None:
         """CDN URL'sinden PNG indirir."""
-        targets = [url]
-
-        for target in targets:
+        max_retries = 3
+        for attempt in range(max_retries):
             try:
-                resp = self.session.get(target, timeout=CDN_TIMEOUT)
-                if resp.status_code == 200 and resp.content[:4] in (b"\x89PNG", b"\xff\xd8\xff"):
-                    out = os.path.join(TMP_DIR, filename)
-                    with open(out, "wb") as f:
-                        f.write(resp.content)
-                    Logger.success(f"Render indirildi: {filename}")
-                    return out
+                # Bazı durumlarda session nesnesini tazelemek gerekebilir (ConnectionReset durumunda)
+                resp = self.session.get(url, timeout=CDN_TIMEOUT)
+                
+                if resp.status_code == 200:
+                    # PNG veya JPEG header kontrolü
+                    if resp.content[:4] in (b"\x89PNG", b"\xff\xd8\xff"):
+                        out = os.path.join(TMP_DIR, filename)
+                        with open(out, "wb") as f:
+                            f.write(resp.content)
+                        Logger.success(f"Render indirildi: {filename}")
+                        return out
+                
+                if resp.status_code == 429:
+                    time.sleep(5)
+                    continue
+
+                Logger.warn(f"CDN deneme {attempt+1} başarısız (Status: {resp.status_code})")
+                time.sleep(2)
+
             except Exception as e:
-                Logger.warn(f"CDN deneme başarısız ({target[:60]}): {e}")
+                Logger.warn(f"CDN deneme {attempt+1} hatası ({url[:60]}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(3)
+        
         return None

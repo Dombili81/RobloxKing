@@ -1,0 +1,115 @@
+{
+  "version": "2.0",
+  "engine": "auto",
+
+  "output": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "duration_seconds": 15,
+    "codec": "libx264",
+    "crf": 22,
+    "preset": "fast",
+    "output_dir": "output"
+  },
+
+  "character": {
+    "size_ratio": 0.78,
+    "center_y_ratio": 0.38,
+    "bounce_amplitude_px": 55,
+    "bounce_period_sec": 0.85,
+    "swing_amplitude_rad": 0.18,
+    "swing_period_sec": 1.1,
+    "colorkey_color": "white",
+    "colorkey_similarity": 0.30,
+    "colorkey_blend": 0.20
+  },
+
+  "background": {
+    "gradient_top_rgb": [5, 0, 20],
+    "gradient_bottom_rgb": [15, 8, 48],
+    "center_glow_color_rgba": [40, 20, 80, 90],
+    "center_glow_blur_radius": 180,
+    "sparkle_count": 220,
+    "neon_line_y_ratio": 0.71,
+    "neon_line_top_ratio": 0.12
+  },
+
+  "text_overlays": [
+    {
+      "id": "main_call",
+      "messages": ["🔥 NEW DROP", "LIMITED STYLE", "ROBLOX OUTFIT IDEA", "RATE THIS FIT 1-10"],
+      "font_size": 88,
+      "bold": true,
+      "text_color_rgb": [255, 255, 255],
+      "glow_color_rgb": [0, 200, 255],
+      "y_ratio": 0.06,
+      "appear_time_sec": 0.3,
+      "zoom_from": 0.60,
+      "zoom_duration_sec": 0.40
+    },
+    {
+      "id": "title",
+      "font_size": 62,
+      "bold": true,
+      "text_color_rgb": [255, 255, 255],
+      "glow_color_rgb": [180, 0, 255],
+      "y_ratio": 0.73,
+      "appear_time_sec": 1.2,
+      "zoom_from": 0.70,
+      "zoom_duration_sec": 0.35
+    },
+    {
+      "id": "price",
+      "template": "💰  {price} Robux",
+      "font_size": 64,
+      "bold": true,
+      "text_color_rgb": [255, 240, 50],
+      "glow_color_rgb": [255, 140, 0],
+      "y_ratio": 0.83,
+      "appear_time_sec": 2.0,
+      "zoom_from": 0.75,
+      "zoom_duration_sec": 0.30
+    },
+    {
+      "id": "group",
+      "template": "🛒  {group}",
+      "font_size": 44,
+      "bold": false,
+      "text_color_rgb": [220, 180, 255],
+      "glow_color_rgb": [160, 0, 255],
+      "y_ratio": 0.91,
+      "appear_time_sec": 3.0,
+      "zoom_from": 1.0,
+      "zoom_duration_sec": 0.40
+    }
+  ],
+
+  "audio": {
+    "source_dir": "tempvid",
+    "loop": true,
+    "volume": 0.85
+  },
+
+  "blender": {
+    "executable": "blender",
+    "blend_template": "blender_scripts/roblox_rig.blend",
+    "render_engine": "BLENDER_EEVEE",
+    "samples": 32,
+    "rotation_frames": 450,
+    "use_gpu": true
+  },
+
+  "font_paths": {
+    "bold": [
+      "C:/Windows/Fonts/arialbd.ttf",
+      "C:/Windows/Fonts/calibrib.ttf",
+      "C:/Windows/Fonts/verdanab.ttf"
+    ],
+    "regular": [
+      "C:/Windows/Fonts/arial.ttf",
+      "C:/Windows/Fonts/calibri.ttf",
+      "C:/Windows/Fonts/verdana.ttf"
+    ]
+  }
+}

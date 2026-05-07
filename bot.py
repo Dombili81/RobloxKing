@@ -1690,7 +1690,8 @@ async def start_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE, keyword_list
 # ─── TikTok Yayınlama ─────────────────────────────────────────────────────────
 async def _publish_to_tiktok(
     update, cfg: dict, item_name: str, price: int,
-    thumbnail_path: str, shirt_id: str = None, pants_id: str = None
+    thumbnail_path: str, shirt_id: str = None, pants_id: str = None,
+    shirt_path: str = None, pants_path: str = None,
 ):
     """Başarılı Roblox upload'dan sonra TikTok tanıtım videosu oluşturup yayınlar."""
     chat = update.effective_chat
@@ -1703,10 +1704,21 @@ async def _publish_to_tiktok(
         group_name = cfg.get("TIKTOK_GROUP_NAME", "Roblox Group")
         cookie     = load_cookie()
         composer   = VideoComposer()
-        video_path = await asyncio.to_thread(
-            composer.compose, thumbnail_path, item_name, price, group_name,
-            shirt_id, pants_id, cookie
-        )
+
+        # Asset ID'leri varsa Roblox API üzerinden karakter render'ı al (öncelikli)
+        # Aksi halde yerel PNG'lerden fallback karakter oluştur
+        if shirt_id:
+            video_path = await asyncio.to_thread(
+                composer.compose, thumbnail_path, item_name, price, group_name,
+                shirt_id, pants_id, cookie,
+            )
+        else:
+            _s = shirt_path or thumbnail_path
+            _p = pants_path or thumbnail_path
+            video_path = await asyncio.to_thread(
+                composer.compose_from_textures,
+                _s, _p, item_name, price, group_name,
+            )
 
         await status_msg.edit_text(
             "🎵 *Video hazır, TikTok'a yükleniyor...*", parse_mode="Markdown"
@@ -1997,6 +2009,8 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                 thumbnail_path=shirt_path,
                                 shirt_id=str(asset_id),
                                 pants_id=str(pants_id),
+                                shirt_path=shirt_path,
+                                pants_path=pants_path,
                             ))
 
             elif pair_mode == "single":
