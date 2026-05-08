@@ -5,26 +5,56 @@ Başarısız olursa caller mevcut shirt_path PNG'yi kullanır (graceful fallback
 """
 import os
 import time
-import requests
-from scrapers.utils import Logger
+import random
+from curl_cffi import requests as cffi_requests
+from scrapers.utils import Logger, make_session
 
 TMP_DIR        = "tmp"
 THUMBNAILS_URL = "https://thumbnails.roblox.com/v1/assets"
-CDN_TIMEOUT    = 25   # tr.rbxcdn.com yavaş olabiliyor
+CDN_TIMEOUT    = 20
 API_TIMEOUT    = 12
+
+# Ücretsiz proxy listesi API'leri (yalnızca herkese açık CDN indirme için)
+_PROXY_LIST_URLS = [
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=5000&country=all&ssl=yes&anonymity=all",
+    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+]
+
+_proxy_cache: list[str] = []
+_proxy_cache_time: float = 0
+_PROXY_CACHE_TTL = 600  # 10 dakika
+
+
+def _fetch_public_proxies() -> list[str]:
+    global _proxy_cache, _proxy_cache_time
+    if _proxy_cache and (time.time() - _proxy_cache_time) < _PROXY_CACHE_TTL:
+        return _proxy_cache
+    proxies = []
+    for url in _PROXY_LIST_URLS:
+        try:
+            r = cffi_requests.get(url, timeout=10, impersonate="chrome124")
+            if r.status_code == 200:
+                lines = [l.strip() for l in r.text.splitlines() if ":" in l.strip()]
+                proxies.extend(f"http://{l}" for l in lines[:80])
+                if proxies:
+                    break
+        except Exception:
+            continue
+    random.shuffle(proxies)
+    _proxy_cache = proxies
+    _proxy_cache_time = time.time()
+    Logger.info(f"{len(proxies)} public proxy yüklendi.")
+    return proxies
+
+
+def _cdn_session_with_proxy(proxy: str) -> cffi_requests.Session:
+    return cffi_requests.Session(impersonate="chrome124", proxy=proxy)
 
 
 class RobloxRenderer:
     def __init__(self, cookie: str = None):
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.roblox.com/"
-        })
-        if cookie:
-            self.session.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
+        self.cookie = cookie
+        self.session = make_session(cookie)
 
     def get_outfit_render(
         self,
@@ -32,16 +62,11 @@ class RobloxRenderer:
         pants_id: str = None,
         size: str = "420x420",
     ) -> tuple:
-        """
-        Shirt ve pants için render PNG indirir.
-        Returns: (shirt_render_path_or_None, pants_render_path_or_None)
-        """
         os.makedirs(TMP_DIR, exist_ok=True)
         shirt = self._fetch_one(shirt_id, size, "shirt") if shirt_id else None
         pants = self._fetch_one(pants_id, size, "pants") if pants_id else None
         return shirt, pants
 
-    # ────────────────────────────────────────────────────────────────────────────
     def _fetch_one(self, asset_id: str, size: str, label: str) -> str | None:
         try:
             image_url = self._get_thumbnail_url(asset_id, size)
@@ -53,7 +78,6 @@ class RobloxRenderer:
             return None
 
     def _get_thumbnail_url(self, asset_id: str, size: str) -> str | None:
-        """Thumbnails API'yi çağırır, gerekirse 'Pending' durumunu bekler."""
         for attempt in range(3):
             try:
                 r = self.session.get(
@@ -79,32 +103,35 @@ class RobloxRenderer:
         return None
 
     def _download_png(self, url: str, filename: str) -> str | None:
-        """CDN URL'sinden PNG indirir."""
-        max_retries = 3
-        for attempt in range(max_retries):
+        # Önce proxy olmadan dene
+        result = self._try_download(url, filename, session=self.session)
+        if result:
+            return result
+
+        # Başarısız olduysa public proxy rotasyonu ile dene
+        Logger.info("Direkt bağlantı başarısız, public proxy deneniyor...")
+        proxies = _fetch_public_proxies()
+        for proxy in proxies[:15]:
             try:
-                # Bazı durumlarda session nesnesini tazelemek gerekebilir (ConnectionReset durumunda)
-                resp = self.session.get(url, timeout=CDN_TIMEOUT)
-                
-                if resp.status_code == 200:
-                    # PNG veya JPEG header kontrolü
-                    if resp.content[:4] in (b"\x89PNG", b"\xff\xd8\xff"):
-                        out = os.path.join(TMP_DIR, filename)
-                        with open(out, "wb") as f:
-                            f.write(resp.content)
-                        Logger.success(f"Render indirildi: {filename}")
-                        return out
-                
-                if resp.status_code == 429:
-                    time.sleep(5)
-                    continue
+                s = _cdn_session_with_proxy(proxy)
+                result = self._try_download(url, filename, session=s, timeout=12)
+                if result:
+                    Logger.info(f"Proxy ile indirildi: {proxy}")
+                    return result
+            except Exception:
+                continue
 
-                Logger.warn(f"CDN deneme {attempt+1} başarısız (Status: {resp.status_code})")
-                time.sleep(2)
+        Logger.warn(f"CDN indirme tamamen başarısız: {filename}")
+        return None
 
-            except Exception as e:
-                Logger.warn(f"CDN deneme {attempt+1} hatası ({url[:60]}): {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(3)
-        
+    def _try_download(self, url: str, filename: str, session, timeout: int = CDN_TIMEOUT) -> str | None:
+        try:
+            resp = session.get(url, timeout=timeout)
+            if resp.status_code == 200 and resp.content[:4] in (b"\x89PNG", b"\xff\xd8\xff"):
+                out = os.path.join(TMP_DIR, filename)
+                with open(out, "wb") as f:
+                    f.write(resp.content)
+                return out
+        except Exception:
+            pass
         return None

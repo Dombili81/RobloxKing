@@ -1,8 +1,7 @@
-import requests
 import os
 import time
 import random
-from scrapers.utils import Logger
+from scrapers.utils import Logger, make_session
 
 class AssetUploader:
     """
@@ -27,17 +26,9 @@ class AssetUploader:
         self.max_uploads = max_uploads  # 0 = unlimited
         self._uploads_this_session = 0
 
-        self.session = requests.Session()
-        self.session.cookies.set(".ROBLOSECURITY", self.cookie, domain=".roblox.com")
+        self.session = make_session(self.cookie)
         self.session.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            ),
-            "Referer": "https://www.roblox.com/",
             "Origin": "https://www.roblox.com",
-            "Accept-Language": "en-US,en;q=0.9",
             "Accept": "application/json, text/plain, */*",
         })
         self._csrf_token = None

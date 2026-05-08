@@ -1,4 +1,29 @@
+import os
 import sys
+from curl_cffi import requests as cffi_requests
+
+def _read_proxy() -> str | None:
+    proxy = os.environ.get("ROBLOX_PROXY", "").strip()
+    if not proxy:
+        cfg = os.path.join(os.path.dirname(__file__), "..", "config.txt")
+        try:
+            with open(cfg) as f:
+                for line in f:
+                    if line.startswith("PROXY="):
+                        proxy = line.split("=", 1)[1].strip()
+                        break
+        except FileNotFoundError:
+            pass
+    return proxy or None
+
+def make_session(cookie: str = None) -> cffi_requests.Session:
+    """Chrome TLS parmak iziyle hazır bir session döner (CDN fingerprint bypass)."""
+    proxy = _read_proxy()
+    s = cffi_requests.Session(impersonate="chrome124", proxy=proxy)
+    if cookie:
+        s.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
+    return s
+
 
 class Logger:
     @staticmethod

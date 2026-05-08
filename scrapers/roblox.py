@@ -1,13 +1,9 @@
-import requests
 import re
-from scrapers.utils import Logger
+from scrapers.utils import Logger, make_session
 
 class RobloxScraper:
     def __init__(self, cookie=None, sort_type: int = 2, sort_agg: int = 5):
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        })
+        self.session = make_session(cookie)
         self.has_auth = False
         # Search sort config (mirrors Roblox Catalog API)
         # sort_type: 0=Relevance, 1=Favorited, 2=Sales, 4=PriceAsc, 5=PriceDesc...
@@ -17,7 +13,6 @@ class RobloxScraper:
         self._desc_cache = {} # Cache to avoid 429s on description calls
         
         if cookie:
-            self.session.cookies.set(".ROBLOSECURITY", cookie, domain=".roblox.com")
             try:
                 # Fetch CSRF token
                 r = self.session.post("https://auth.roblox.com/v2/logout")

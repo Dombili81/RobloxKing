@@ -1,13 +1,12 @@
-import requests
 import os
 import re
 from scrapers.firebase_db import FirebaseManager
-from scrapers.utils import Logger
+from scrapers.utils import Logger, make_session
 
 class AssetDownloader:
     def __init__(self):
-        # Firebase üzerinden merkezi cookie yönetimi
         self.db = FirebaseManager()
+        self._session = make_session()
 
     def _normalize_cookie(self, raw: str) -> str | None:
         """Cookie stringini temizle."""
@@ -66,7 +65,7 @@ class AssetDownloader:
 
         for url in base_urls:
             try:
-                response = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
+                response = self._session.get(url, headers=headers, timeout=10, allow_redirects=True)
                 if response.status_code == 200:
                     content = response.content
                     if content.startswith(b"\x89PNG"):
@@ -81,7 +80,7 @@ class AssetDownloader:
                         image_id = match.group(1)
                         Logger.debug(f"Görüntü ID tespit edildi: {image_id}. PNG alınıyor...")
                         img_url = f"https://assetdelivery.roblox.com/v1/asset/?id={image_id}"
-                        img_resp = requests.get(img_url, headers=headers, timeout=10)
+                        img_resp = self._session.get(img_url, headers=headers, timeout=10)
                         if img_resp.status_code == 200 and img_resp.content.startswith(b"\x89PNG"):
                             with open(path, "wb") as f:
                                 f.write(img_resp.content)
@@ -90,7 +89,7 @@ class AssetDownloader:
                 
                 elif response.status_code == 401 and cookie:
                     Logger.debug("Oturum hatası (401), oturumsuz deneniyor...")
-                    resp_no_auth = requests.get(url, timeout=10)
+                    resp_no_auth = self._session.get(url, timeout=10)
                     if resp_no_auth.status_code == 200 and resp_no_auth.content.startswith(b"\x89PNG"):
                         with open(path, "wb") as f:
                             f.write(resp_no_auth.content)
@@ -118,7 +117,7 @@ class AssetDownloader:
         
         try:
             det_url = f"https://economy.roblox.com/v2/assets/{asset_id}/details"
-            det_resp = requests.get(det_url, headers=headers, timeout=10)
+            det_resp = self._session.get(det_url, headers=headers, timeout=10)
             if det_resp.status_code == 200:
                 det_data = det_resp.json()
                 Logger.debug(f"Asset detay alındı: {det_data.get('AssetTypeId')} - {det_data.get('Name')}")
@@ -128,7 +127,7 @@ class AssetDownloader:
         # 2. Accessory XML/Binary dosyasını al ve ID'leri çıkar
         url = f"https://assetdelivery.roblox.com/v1/asset/?id={asset_id}"
         try:
-            resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+            resp = self._session.get(url, headers=headers, timeout=15, allow_redirects=True)
             if resp.status_code != 200:
                 Logger.error(f"UGC Dosyası İndirme Hatası: {resp.status_code}")
                 return None
@@ -176,7 +175,7 @@ class AssetDownloader:
             with zipfile.ZipFile(zip_path, 'w') as zipf:
                 # İndir: Mesh
                 mesh_url = f"https://assetdelivery.roblox.com/v1/asset/?id={mesh_id}"
-                m_resp = requests.get(mesh_url, headers=headers, timeout=15)
+                m_resp = self._session.get(mesh_url, headers=headers, timeout=15)
                 if m_resp.status_code == 200:
                     ext = ".obj" if m_resp.content.startswith(b"v ") else ".mesh"
                     zipf.writestr(f"{asset_id}_mesh{ext}", m_resp.content)
@@ -188,7 +187,7 @@ class AssetDownloader:
                 # İndir: Texture
                 if texture_id:
                     tex_url = f"https://assetdelivery.roblox.com/v1/asset/?id={texture_id}"
-                    t_resp = requests.get(tex_url, headers=headers, timeout=15)
+                    t_resp = self._session.get(tex_url, headers=headers, timeout=15)
                     if t_resp.status_code == 200:
                         zipf.writestr(f"{asset_id}_texture.png", t_resp.content)
                         Logger.debug(f"Texture indirildi ({len(t_resp.content)} byte)")

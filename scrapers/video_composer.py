@@ -26,6 +26,8 @@ _MAIN_CALLS = [
     "LIMITED STYLE",
     "ROBLOX OUTFIT IDEA",
     "RATE THIS FIT 1-10",
+    "WOULD YOU WEAR THIS?",
+    "RATE THIS FIT ⭐",
 ]
 
 
@@ -41,6 +43,7 @@ class VideoComposer:
         shirt_id:       str = None,
         pants_id:       str = None,
         cookie:         str = None,
+        group_id:       int = None,
     ) -> str:
         os.makedirs(TMP_DIR, exist_ok=True)
         uid = f"{os.getpid()}_{random.randint(1000, 9999)}"
@@ -50,12 +53,24 @@ class VideoComposer:
         texts     = self._gen_neon_texts(item_name, price, group_name, uid)
         audio_src = self._find_audio()
 
+        group_icon_png = None
+        gi_texts       = None
+        if group_id:
+            group_icon_png = self._fetch_group_icon(group_id, uid)
+        if group_icon_png:
+            gi_texts = self._gen_group_intro_texts(group_name, uid)
+
         output = os.path.join(TMP_DIR, f"tiktok_{uid}.mp4")
         try:
-            self._run_ffmpeg(bg_png, char_png, texts, audio_src, output)
+            self._run_ffmpeg(bg_png, char_png, texts, audio_src, output,
+                             group_icon_png=group_icon_png, gi_texts=gi_texts)
             return output
         finally:
             cleanup = [bg_png] + list(texts)
+            if group_icon_png:
+                cleanup.append(group_icon_png)
+            if gi_texts:
+                cleanup.extend(gi_texts)
             if char_png != thumbnail_path:
                 cleanup.append(char_png)
             for p in cleanup:
@@ -284,6 +299,77 @@ class VideoComposer:
                 return os.path.join(TEMPVID_DIR, f)
         return None
 
+    # ── 2b. Roblox grup ikonu indir + dairesel kırp + neon border ────────────
+    def _fetch_group_icon(self, group_id: int, uid: str) -> str | None:
+        import io
+        import json
+        import urllib.request
+        try:
+            url = (
+                f"https://thumbnails.roblox.com/v1/groups/icons"
+                f"?groupIds={group_id}&size=150x150&format=Png&isCircular=false"
+            )
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read()).get("data", [])
+            if not data or data[0].get("state") != "Completed":
+                return None
+            img_url = data[0]["imageUrl"]
+
+            req2 = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req2, timeout=15) as resp2:
+                raw = Image.open(io.BytesIO(resp2.read())).convert("RGBA")
+
+            size = 300
+            raw  = raw.resize((size, size), Image.LANCZOS)
+
+            # Dairesel maske
+            mask = Image.new("L", (size, size), 0)
+            ImageDraw.Draw(mask).ellipse([0, 0, size - 1, size - 1], fill=255)
+            raw.putalpha(mask)
+
+            # Neon glow border: concentric ellipse outlines + Gaussian blur
+            border = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            bd     = ImageDraw.Draw(border)
+            for offset, alpha in [(0, 200), (2, 140), (4, 80)]:
+                bd.ellipse(
+                    [offset, offset, size - 1 - offset, size - 1 - offset],
+                    outline=(0, 200, 255, alpha), width=4,
+                )
+            border = border.filter(ImageFilter.GaussianBlur(radius=6))
+
+            final = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            final = Image.alpha_composite(final, border)
+            final = Image.alpha_composite(final, raw)
+
+            path = os.path.join(TMP_DIR, f"group_icon_{uid}.png")
+            final.save(path, "PNG")
+            return path
+
+        except Exception as e:
+            print(f"[VideoComposer] Grup ikonu alınamadı: {e}")
+            return None
+
+    # ── 2c. Grup intro metin PNG'leri ────────────────────────────────────────
+    def _gen_group_intro_texts(self, group_name: str, uid: str) -> tuple:
+        f_name = self._font(72, bold=True)
+        f_sub  = self._font(48, bold=False)
+        name_png = self._neon_png(
+            group_name[:28],
+            f_name,
+            text_col=(255, 255, 255),
+            glow_col=(0, 200, 255),
+            uid=uid, tag="gi_name",
+        )
+        sub_png = self._neon_png(
+            "Join Our Group",
+            f_sub,
+            text_col=(180, 255, 220),
+            glow_col=(0, 160, 120),
+            uid=uid, tag="gi_sub",
+        )
+        return name_png, sub_png
+
     # ── 3. Arka plan PNG ─────────────────────────────────────────────────────
     def _gen_background(self, uid: str) -> str:
         img  = Image.new("RGB", (TARGET_W, TARGET_H))
@@ -431,12 +517,12 @@ class VideoComposer:
                 pass
         return ImageFont.load_default()
 
-    # ── 5. ffmpeg pipeline (fade+zoom text animasyonu) ────────────────────────
-    def _run_ffmpeg(self, bg_png, char_png, texts, audio_src, output):
+    # ── 5. ffmpeg pipeline (fade+zoom text animasyonu + grup intro) ──────────
+    def _run_ffmpeg(self, bg_png, char_png, texts, audio_src, output,
+                    group_icon_png=None, gi_texts=None):
         main_png, title_png, price_png, group_png = texts
         dur     = TARGET_SECS
         char_sz = int(TARGET_W * 0.78)  # 840px
-
         char_cy = int(TARGET_H * 0.38)
 
         # Metin Y pozisyonları (1920px)
@@ -445,12 +531,15 @@ class VideoComposer:
         y_price = int(TARGET_H * 0.83)
         y_group = int(TARGET_H * 0.91)
 
-        # Fade+zoom yardımcıları — her text için (t_start, zoom_from, zoom_dur, y_pos, label)
+        has_intro = group_icon_png is not None and gi_texts is not None
+        t_offset  = 2.5 if has_intro else 0.0
+
+        # Fade+zoom yardımcıları — intro varsa tüm start zamanları +2.5s kaydırılır
         overlays = [
-            (main_png,  0.3,  0.60, 0.40, y_main,  "t0"),
-            (title_png, 1.2,  0.70, 0.35, y_title, "t1"),
-            (price_png, 2.0,  0.75, 0.30, y_price, "t2"),
-            (group_png, 3.0,  1.00, 0.40, y_group, "t3"),
+            (main_png,  0.3  + t_offset, 0.60, 0.40, y_main,  "t0"),
+            (title_png, 1.2  + t_offset, 0.70, 0.35, y_title, "t1"),
+            (price_png, 2.0  + t_offset, 0.75, 0.30, y_price, "t2"),
+            (group_png, 3.0  + t_offset, 1.00, 0.40, y_group, "t3"),
         ]
 
         fc_parts = [
@@ -467,8 +556,18 @@ class VideoComposer:
             f"fillcolor=0x00000000:"
             f"ow=rotw(iw):oh=roth(iw)[canim]",
 
+            # Zoom pulse: ±5% scale, 3s periyot
+            f"[canim]scale=w='round(iw*(0.95+0.05*sin(2*3.14159*t/3.0))/2)*2':"
+            f"h='round(ih*(0.95+0.05*sin(2*3.14159*t/3.0))/2)*2':eval=frame[czoom]",
+
+            # t=7s'de 360° dönüş (0.5s süre)
+            f"[czoom]rotate="
+            f"angle='if(between(t,7,7.5),(t-7)/0.5*2*3.14159,0)':"
+            f"fillcolor=0x00000000:"
+            f"ow=rotw(iw):oh=roth(iw)[cspin]",
+
             # Karakter overlay: yatay ortalı + dikey bounce
-            f"[bg][canim]overlay="
+            f"[bg][cspin]overlay="
             f"x='(main_w-overlay_w)/2':"
             f"y='{char_cy} - overlay_h/2 + 55*sin(2*3.14159*t/0.85)':"
             f"eval=frame:format=auto[base]",
@@ -476,10 +575,10 @@ class VideoComposer:
 
         prev = "base"
         for i, (_, t_start, zoom_from, zoom_dur, y_pos, label) in enumerate(overlays):
-            inp_idx = i + 2   # inputs: 0=bg, 1=char, 2=main, 3=title, 4=price, 5=group
-            next_lbl = "final" if i == len(overlays) - 1 else f"w{i+1}"
+            inp_idx  = i + 2   # inputs: 0=bg, 1=char, 2=main, 3=title, 4=price, 5=group
+            is_last  = i == len(overlays) - 1
+            next_lbl = ("pre_intro" if has_intro else "final") if is_last else f"w{i+1}"
 
-            # fade=in:alpha=1 + scale zoom ifadesi
             fc_parts.append(
                 f"[{inp_idx}:v]"
                 f"fade=in:st={t_start}:d={zoom_dur}:alpha=1,"
@@ -496,6 +595,56 @@ class VideoComposer:
             )
             prev = next_lbl
 
+        # ── Grup intro overlay'leri (yalnızca has_intro=True ise) ────────────
+        if has_intro:
+            icon_sz     = 300
+            icon_base_y = int(TARGET_H * 0.30)  # 576px — ikonun duracağı Y
+
+            # İkon: alttan kayarak girer (0-0.8s), 2.0-2.5s'de fade out
+            fc_parts.append(
+                f"[6:v]scale={icon_sz}:{icon_sz},"
+                f"fade=in:st=0:d=0.4:alpha=1,"
+                f"fade=out:st=2.0:d=0.5:alpha=1[gi_icon]"
+            )
+            fc_parts.append(
+                f"[pre_intro][gi_icon]overlay="
+                f"x='(main_w-{icon_sz})/2':"
+                f"y='if(lt(t,2.5),{TARGET_H}-({TARGET_H}-{icon_base_y})*min(1,t/0.8),{TARGET_H})':"
+                f"eval=frame:format=auto[aft_icon]"
+            )
+
+            # Grup adı: fade in 0.8-1.5s, fade out 2.0-2.5s
+            fc_parts.append(
+                f"[7:v]fade=in:st=0.8:d=0.7:alpha=1,"
+                f"fade=out:st=2.0:d=0.5:alpha=1[gi_name_f]"
+            )
+            fc_parts.append(
+                f"[aft_icon][gi_name_f]overlay="
+                f"x='(main_w-overlay_w)/2':y={int(TARGET_H * 0.55)}:"
+                f"eval=frame:format=auto[aft_name]"
+            )
+
+            # Subtitle: fade in 1.5-2.2s, fade out 2.0-2.5s
+            fc_parts.append(
+                f"[8:v]fade=in:st=1.5:d=0.7:alpha=1,"
+                f"fade=out:st=2.0:d=0.5:alpha=1[gi_sub_f]"
+            )
+            fc_parts.append(
+                f"[aft_name][gi_sub_f]overlay="
+                f"x='(main_w-overlay_w)/2':y={int(TARGET_H * 0.63)}:"
+                f"eval=frame:format=auto[aft_sub]"
+            )
+
+            # Beyaz flash geçişi 2.3-2.5s (lavfi white input [9:v])
+            fc_parts.append(
+                f"[9:v]fade=in:st=2.3:d=0.1:alpha=1,"
+                f"fade=out:st=2.4:d=0.1:alpha=1[flash_layer]"
+            )
+            fc_parts.append(
+                f"[aft_sub][flash_layer]overlay="
+                f"x=0:y=0:eval=frame:format=auto[final]"
+            )
+
         fc = ";".join(fc_parts)
 
         cmd = [
@@ -508,11 +657,23 @@ class VideoComposer:
             "-loop", "1", "-i", group_png,
         ]
 
+        if has_intro:
+            gi_name_png, gi_sub_png = gi_texts
+            cmd += [
+                "-loop", "1", "-i", group_icon_png,  # [6]
+                "-loop", "1", "-i", gi_name_png,      # [7]
+                "-loop", "1", "-i", gi_sub_png,        # [8]
+                "-f", "lavfi", "-i",
+                f"color=white:size={TARGET_W}x{TARGET_H}:rate=30",  # [9]
+            ]
+            audio_base = 10
+        else:
+            audio_base = 6
+
         audio_map = []
         if audio_src:
             cmd += ["-stream_loop", "-1", "-i", audio_src]
-            audio_idx = 6
-            audio_map = ["-map", f"{audio_idx}:a", "-c:a", "aac", "-b:a", "128k"]
+            audio_map = ["-map", f"{audio_base}:a", "-c:a", "aac", "-b:a", "128k"]
 
         cmd += [
             "-filter_complex", fc,

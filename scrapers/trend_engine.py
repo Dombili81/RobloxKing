@@ -14,9 +14,9 @@ import re
 import math
 import random
 import time
-import requests
 import xml.etree.ElementTree as ET
 from scrapers.firebase_db import FirebaseManager
+from scrapers.utils import make_session
 
 # ─── Template Varyantları ──────────────────────────────────────────────────
 TEMPLATES = [
@@ -53,11 +53,7 @@ HEADLINE_NOISE = {
 class TrendEngine:
     def __init__(self, db_manager: FirebaseManager):
         self.db = db_manager
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-        })
+        self.session = make_session()
         self.cache = {"time": 0, "data": []}
 
     # ══════════════════════════════════════════════════════════════════════

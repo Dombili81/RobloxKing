@@ -1054,8 +1054,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             from scrapers.video_composer import VideoComposer
             vc         = VideoComposer()
+            group_id   = cfg_now.get("GROUP_ID") or None
             video_path = await asyncio.to_thread(
-                vc.compose, thumb, name, price, group_name, shirt_id, pants_id, cookie
+                vc.compose, thumb, name, price, group_name, shirt_id, pants_id, cookie, group_id
             )
 
             await status_msg.edit_text("✅ *Video hazır, gönderiliyor...*", parse_mode="Markdown")

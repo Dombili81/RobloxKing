@@ -3,14 +3,13 @@ finance.py - Group economy and sales tracker
 """
 import asyncio
 import time
-import requests
+from scrapers.utils import make_session
 
 class GroupFinanceMonitor:
     def __init__(self, cookie: str, group_id: int):
         self.cookie = cookie
         self.group_id = group_id
-        self.session = requests.Session()
-        self.session.cookies[".ROBLOSECURITY"] = cookie
+        self.session = make_session(cookie)
         
         # We track the last transaction ID we've seen so we don't spam old sales
         self.last_transaction_id = set()
