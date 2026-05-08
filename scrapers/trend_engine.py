@@ -16,7 +16,7 @@ import random
 import time
 import xml.etree.ElementTree as ET
 from scrapers.firebase_db import FirebaseManager
-from scrapers.utils import make_session
+from scrapers.utils import Logger, make_session
 
 # ─── Template Varyantları ──────────────────────────────────────────────────
 TEMPLATES = [
@@ -97,7 +97,7 @@ class TrendEngine:
                 })
             return result
         except Exception as e:
-            print(f"Jikan err: {e}")
+            Logger.warn(f"Jikan API hatası: {e}")
             return []
 
     def _get_rss_entities(self) -> list[dict]:
@@ -140,7 +140,7 @@ class TrendEngine:
                     if count >= 20:  # Kaynak başına max 20 başlık
                         break
             except Exception as e:
-                print(f"RSS err ({url}): {e}")
+                Logger.warn(f"RSS hatası ({url}): {e}")
 
         # Başlıklardan entity çıkar
         entities: list[dict] = []

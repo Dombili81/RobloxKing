@@ -13,6 +13,7 @@ import math
 import random
 import subprocess
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from scrapers.utils import Logger
 
 FFMPEG      = "ffmpeg"
 TMP_DIR     = "tmp"
@@ -115,7 +116,7 @@ class VideoComposer:
                         try: os.remove(p)
                         except Exception: pass
         except Exception as e:
-            print(f"[VideoComposer] Three.js render başarısız ({e}), fallback...")
+            Logger.warn(f"Three.js render başarısız ({e}), fallback...")
 
         # ── Yol 2: Roblox API veya R6 avatar (statik) ───────────────────────
         char_png  = self._build_char_from_textures(shirt_png, pants_png, uid)
@@ -347,7 +348,7 @@ class VideoComposer:
             return path
 
         except Exception as e:
-            print(f"[VideoComposer] Grup ikonu alınamadı: {e}")
+            Logger.warn(f"Grup ikonu alınamadı: {e}")
             return None
 
     # ── 2c. Grup intro metin PNG'leri ────────────────────────────────────────

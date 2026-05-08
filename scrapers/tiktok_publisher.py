@@ -5,6 +5,7 @@ Token hazır olmadığında publish_video() {"success": False} döner, bot çal�
 import os
 import time
 import requests
+from scrapers.utils import Logger
 
 
 class TikTokPublisher:
@@ -77,9 +78,9 @@ class TikTokPublisher:
                     "publish_id": data.get("publish_id"),
                     "upload_url": data.get("upload_url"),
                 }
-            print(f"TikTok init HTTP {r.status_code}: {r.text[:300]}")
+            Logger.warn(f"TikTok init HTTP {r.status_code}: {r.text[:300]}")
         except Exception as e:
-            print(f"TikTok init istisnası: {e}")
+            Logger.error(f"TikTok init istisnası: {e}")
         return None
 
     # ── 2. Video yükleme ────────────────────────────────────────────────────────
@@ -98,7 +99,7 @@ class TikTokPublisher:
                 )
             return r.status_code in (200, 201, 206)
         except Exception as e:
-            print(f"TikTok upload istisnası: {e}")
+            Logger.error(f"TikTok yükleme istisnası: {e}")
             return False
 
     # ── 3. Status polling ───────────────────────────────────────────────────────

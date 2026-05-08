@@ -45,9 +45,9 @@ class AssetUploader:
             if token:
                 self._csrf_token = token
             else:
-                print(f"[Uploader] WARNING: Could not get CSRF token (HTTP {r.status_code}).")
+                Logger.warn(f"CSRF token alınamadı (HTTP {r.status_code}).")
         except Exception as e:
-            print(f"[Uploader] ERROR getting CSRF token: {e}")
+            Logger.error(f"CSRF token hatası: {e}")
 
     def _ensure_csrf(self):
         if not self._csrf_token:
@@ -73,7 +73,7 @@ class AssetUploader:
                 else:  # PATCH
                     r = self.session.patch(url, data=data, json=json, files=files, timeout=30)
             except Exception as e:
-                print(f"[Uploader] Network error (attempt {attempt}): {e}")
+                Logger.warn(f"Ağ hatası (deneme {attempt}): {e}")
                 time.sleep(backoff)
                 backoff *= 2
                 continue
@@ -82,7 +82,7 @@ class AssetUploader:
             if r.status_code == 403 and "x-csrf-token" in r.headers:
                 self._csrf_token = r.headers["x-csrf-token"]
                 self.session.headers["X-CSRF-TOKEN"] = self._csrf_token
-                print(f"[Uploader] CSRF refreshed, retrying...")
+                Logger.debug("CSRF yenilendi, yeniden deneniyor...")
                 continue
 
             # Roblox rate-limit → 429
@@ -104,17 +104,14 @@ class AssetUploader:
     def _check_session_cap(self) -> bool:
         """Return False (and log) if the per-session upload cap is reached."""
         if self.max_uploads > 0 and self._uploads_this_session >= self.max_uploads:
-            print(
-                f"[Uploader] Session upload cap reached ({self.max_uploads}). "
-                "Skipping remaining uploads for safety."
-            )
+            Logger.warn(f"Oturum yükleme limiti ({self.max_uploads}) doldu.")
             return False
         return True
 
     def _poll_operation(self, operation_id: str) -> int | None:
         """Poll the operation status until it's done or fails."""
         poll_url = f"https://apis.roblox.com/assets/user-auth/v1/operations/{operation_id}"
-        print(f"[Uploader] Waiting for upload operation {operation_id} ...")
+        Logger.info(f"Yükleme operasyonu bekleniyor: {operation_id}")
         
         for _ in range(15):  # Max 15 attempts (approx 30s)
             time.sleep(2)
@@ -126,13 +123,13 @@ class AssetUploader:
                         response = data.get("response", {})
                         asset_id = response.get("assetId")
                         if asset_id:
-                            print(f"[Uploader] Operation Complete -> Asset ID: {asset_id}")
+                            Logger.success(f"Yükleme tamamlandı → Asset ID: {asset_id}")
                             return int(asset_id)
                         else:
-                            print(f"[Uploader] Operation failed: {data.get('error') or 'Unknown error'}")
+                            Logger.error(f"Yükleme başarısız: {data.get('error') or 'Bilinmeyen hata'}")
                             return None
             except Exception as e:
-                print(f"[Uploader] Polling error: {e}")
+                Logger.warn(f"Polling hatası: {e}")
         
         Logger.debug("Polling zaman aşımı.")
         return None
@@ -146,7 +143,7 @@ class AssetUploader:
             return None
 
         if not os.path.exists(image_path):
-            print(f"[Uploader] File not found: {image_path}")
+            Logger.error(f"Dosya bulunamadı: {image_path}")
             return None
 
         type_label = "Shirt" if item_type == 11 else "Pants"
@@ -265,11 +262,11 @@ class AssetUploader:
 
         r = self._post_with_retry(publish_url, json=payload, method="POST")
         if r and r.status_code in (200, 204):
-            print(f"[Uploader] Asset {asset_id} successfully RELEASED to marketplace!")
+            Logger.success(f"Asset {asset_id} pazaryerine yayınlandı!")
             return True
-        
+
         # 2. Fallback to basic configure endpoint
-        print(f"[Uploader] Release endpoint failed ({r.status_code if r else 'None'}). Trying configure PATCH...")
+        Logger.warn(f"Release endpoint başarısız ({r.status_code if r else 'None'}), configure PATCH deneniyor...")
         config_url = f"https://itemconfiguration.roblox.com/v1/assets/{asset_id}/configure"
         payload_legacy = {"isForSale": True, "priceInRobux": int(self.price)}
         

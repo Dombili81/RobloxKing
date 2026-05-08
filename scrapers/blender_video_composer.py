@@ -9,6 +9,7 @@ import random
 import shutil
 import subprocess
 
+from scrapers.utils import Logger
 from scrapers.video_composer import VideoComposer
 
 BLENDER_SCRIPT = os.path.join(
@@ -65,7 +66,7 @@ class BlenderVideoComposer:
         try:
             self._render_character(shirt_png, pants_png, raw_render)
         except Exception as e:
-            print(f"[BlenderVideoComposer] Blender başarısız ({e}), PIL fallback.")
+            Logger.warn(f"Blender başarısız ({e}), PIL fallback.")
             return self._pil.compose_from_textures(
                 shirt_png, pants_png, item_name, price, group_name
             )

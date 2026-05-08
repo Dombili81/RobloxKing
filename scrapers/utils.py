@@ -70,8 +70,8 @@ class Logger:
 
     @staticmethod
     def debug(msg):
-        # Silenced by default. Change to print(f"DEBUG: {msg}") if needed.
-        pass
+        if os.environ.get("DEBUG"):
+            print(f"🔧 [DEBUG] {msg}")
 
 def md_escape(text: str) -> str:
     """Telegram Markdown V1 için özel karakterleri escape et. [+] ve [-] etiketlerini koru."""

@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from scrapers.utils import Logger
 
 # ─── Three.js sahne HTML şablonu ────────────────────────────────────────────
 _HTML = r"""<!DOCTYPE html>
@@ -452,11 +453,11 @@ class ThreeJSRenderer:
                         f.write(base64.b64decode(b64))
 
                     if i % 60 == 0:
-                        print(f'[3D render] {i}/{total} frame ({i*100//total}%)')
+                        Logger.info(f"3D render: {i}/{total} frame ({i*100//total}%)")
 
                 await browser.close()
 
-            print(f'[3D render] Frame yakalama tamamlandı, FFmpeg başlatılıyor...')
+            Logger.info("3D render: Frame yakalama tamamlandı, FFmpeg başlatılıyor...")
             self._frames_to_video(frames_dir, output_path, fps)
 
         finally:
@@ -478,7 +479,7 @@ class ThreeJSRenderer:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if res.returncode != 0:
             raise RuntimeError(f'FFmpeg frames→video başarısız:\n{res.stderr[-600:]}')
-        print(f'[3D render] Video hazır: {output_path}')
+        Logger.success(f"3D render video hazır: {output_path}")
 
     # ── Yardımcı ─────────────────────────────────────────────────────────────
     @staticmethod

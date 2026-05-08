@@ -333,7 +333,7 @@ class RobloxScraper:
                             Logger.success(f"Eşleşen Pants bulundu (Yedek): {name}")
                             pants_assets.append((linked_id, url))
             except Exception as e:
-                print(f"[PairedPants] Error checking linked asset {linked_id}: {e}")
+                Logger.warn(f"Eşleşen asset kontrol hatası ({linked_id}): {e}")
 
         self._desc_cache[shirt_asset_id] = pants_assets
         return pants_assets

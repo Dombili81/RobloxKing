@@ -13,6 +13,7 @@ import random
 import re
 import shutil
 import sys
+from scrapers.utils import Logger
 
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -52,7 +53,7 @@ def _get_composer(engine: str, cfg: dict):
         except ImportError:
             pass
         if engine == "blender":
-            print("[pipeline] Uyarı: Blender bulunamadı, PIL motoru kullanılıyor.")
+            Logger.warn("Blender bulunamadı, PIL motoru kullanılıyor.")
 
     from scrapers.video_composer import VideoComposer
     return VideoComposer(), False
@@ -126,19 +127,19 @@ def discover_pairs(batch_dir: str) -> list:
 def run_batch(batch_dir: str, price: int, group_name: str, cfg: dict, engine: str) -> list:
     pairs = discover_pairs(batch_dir)
     if not pairs:
-        print(f"[pipeline] {batch_dir} içinde shirt/pants çifti bulunamadı.")
+        Logger.warn(f"{batch_dir} içinde shirt/pants çifti bulunamadı.")
         return []
 
     outputs = []
     for shirt, pants, stem in pairs:
         name = stem.replace("_", " ").replace("-", " ").title()
-        print(f"[pipeline] İşleniyor: {name} ({shirt}, {pants})")
+        Logger.info(f"İşleniyor: {name} ({shirt}, {pants})")
         try:
             out = run_single(shirt, pants, name, price, group_name, cfg, engine=engine)
-            print(f"[pipeline] Tamamlandı: {out}")
+            Logger.success(f"Tamamlandı: {out}")
             outputs.append(out)
         except Exception as e:
-            print(f"[pipeline] HATA ({name}): {e}")
+            Logger.error(f"HATA ({name}): {e}")
 
     return outputs
 
@@ -177,12 +178,12 @@ def main():
             cfg=cfg,
             engine=args.engine,
         )
-        print(f"\n[pipeline] {len(outputs)} video üretildi.")
+        Logger.success(f"{len(outputs)} video üretildi.")
         for o in outputs:
             print(f"  → {o}")
     else:
         if not args.shirt or not args.pants:
-            print("Hata: --shirt ve --pants veya --batch-dir belirtilmeli.", file=sys.stderr)
+            Logger.error("--shirt ve --pants veya --batch-dir belirtilmeli.")
             sys.exit(1)
         out = run_single(
             shirt_path=args.shirt,
@@ -194,7 +195,7 @@ def main():
             output_dir=args.output,
             engine=args.engine,
         )
-        print(f"[pipeline] Video hazır: {out}")
+        Logger.success(f"Video hazır: {out}")
 
 
 if __name__ == "__main__":

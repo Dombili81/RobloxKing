@@ -5,6 +5,7 @@ import os
 import json
 import firebase_admin
 from firebase_admin import credentials, firestore
+from scrapers.utils import Logger
 
 class FirebaseManager:
     """
@@ -41,10 +42,10 @@ class FirebaseManager:
                 if main_app.project_id:
                     project_id = main_app.project_id
             
-            print(f"☁️  Firebase Firestore bağlantısı başarılı (Proje: {project_id})")
+            Logger.success(f"Firebase Firestore bağlantısı başarılı (Proje: {project_id})")
         except Exception as e:
-            print(f"⚠️ Firebase başlatılamadı: {e}")
-            print("💡 İPUCU: firebase-key.json dosyası mevcut mu?")
+            Logger.warn(f"Firebase başlatılamadı: {e}")
+            Logger.info("İPUCU: firebase-key.json dosyası mevcut mu?")
 
     def save_setting(self, key: str, value):
         """ Tek bir ayarı Firebase'e kaydet """
@@ -52,7 +53,7 @@ class FirebaseManager:
         try:
             self.doc_ref.set({key: value}, merge=True)
         except Exception as e:
-            print(f"Firebase yazma hatası ({key}): {e}")
+            Logger.error(f"Firebase yazma hatası ({key}): {e}")
 
     def save_cookie(self, cookie: str):
         self.save_setting("ROBLOX_COOKIE", cookie)
@@ -65,7 +66,7 @@ class FirebaseManager:
             doc = self.db.collection("uploaded_items").document(str(source_id)).get()
             return doc.exists
         except Exception as e:
-            print(f"Firebase duplicate check hatası: {e}")
+            Logger.error(f"Firebase duplicate check hatası: {e}")
             return False
 
     def mark_item_as_uploaded(self, source_id: str, roblox_id: str, is_pair: bool = False):
@@ -79,7 +80,7 @@ class FirebaseManager:
                 "timestamp": firestore.SERVER_TIMESTAMP
             })
         except Exception as e:
-            print(f"Firebase save uploaded hatası: {e}")
+            Logger.error(f"Firebase save uploaded hatası: {e}")
 
     def load_settings(self) -> dict:
         """ Tüm ayarları Firebase'den çek """
@@ -89,7 +90,7 @@ class FirebaseManager:
             if doc.exists:
                 return doc.to_dict()
         except Exception as e:
-            print(f"Firebase okuma hatası: {e}")
+            Logger.error(f"Firebase okuma hatası: {e}")
         return {}
 
     def get_recent_uploads(self, limit: int = 5, offset: int = 0) -> list:
@@ -104,7 +105,7 @@ class FirebaseManager:
                 results.append(doc.to_dict())
             return results
         except Exception as e:
-            print(f"Firebase recent_uploads okuma hatası: {e}")
+            Logger.error(f"Firebase recent_uploads okuma hatası: {e}")
             return []
 
     def increment_trend_click(self, keyword: str):
@@ -118,4 +119,4 @@ class FirebaseManager:
                 "last_clicked": firestore.SERVER_TIMESTAMP
             }, merge=True)
         except Exception as e:
-            print(f"Firebase trend click kaydı hatası: {e}")
+            Logger.error(f"Firebase trend click kaydı hatası: {e}")
