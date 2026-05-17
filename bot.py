@@ -1,4 +1,4 @@
-"""
+﻿"""
 bot.py – Butonlu Telegram Botu (Roblox Otomasyon)
 """
 
@@ -6,6 +6,7 @@ import asyncio
 import os
 import threading
 import random
+import traceback
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
@@ -19,7 +20,6 @@ from scrapers.uploader   import AssetUploader
 from scrapers.finance    import GroupFinanceMonitor
 from scrapers.firebase_db import FirebaseManager
 from scrapers.utils import Logger, md_escape
-from scrapers.ugc_mesh_processor import process_ugc_catalog_zip
 from main import generate_metadata, download_and_design, upload_pair_with_crosslink, upload_single_asset
 
 # ─── Firebase Init ───────────────────────────────────────────────────────────
@@ -245,8 +245,8 @@ def settings_keyboard():
         mode_str = "Tekli Mod"
         target_label = "Hedef Item"
     else:
-        mode_str = "3D UGC Mod"
-        target_label = "Hedef 3D Asset"
+        mode_str = "3D UGC Üretici"
+        target_label = "Hedef Model"
     sort_label_map = {
         (2, 5): "En Çok Satan (Tüm Zamanlar)",
         (2, 3): "En Çok Satan (Son Hafta)",
@@ -273,11 +273,7 @@ def settings_keyboard():
         type_str = "Shirt" if single_type == 11 else "Pants"
         kb.append([InlineKeyboardButton(f"👔  Tekli Tip: {type_str}", callback_data="toggle_single_type")])
     elif pair_mode == "ugc":
-        cat_map = {8: "Hat", 41: "Hair", 42: "Face", 43: "Neck", 44: "Shoulder", 45: "Front", 46: "Back", 47: "Waist"}
-        cur_cat = cfg.get("UGC_CAT", 8)
-        cat_name = cat_map.get(cur_cat, "Hat")
-        kb.append([InlineKeyboardButton(f"📦  UGC Kategorisi: {cat_name}", callback_data="set_ugc_cat_menu")])
-        kb.append([InlineKeyboardButton(f"ℹ️  3D Modda Sadece İndirme Yapılır", callback_data="none")])
+        kb.append([InlineKeyboardButton("🤖  AI ile sıfırdan 3D model üretimi", callback_data="none")])
         
     kb.append([InlineKeyboardButton(f"🧭  Sıralama: {sort_label}",      callback_data="set_sort")])
 
@@ -918,37 +914,18 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif new_mode == "single":
             mode_desc = "Tekli Mod (Single Asset)"
         else:
-            mode_desc = "3D UGC Mod (3D Aksesuar İndirme \u2013 Sadece İndirme)"
+            mode_desc = "3D UGC Üretici (AI ile sıfırdan 3D model üretimi)"
             
         await q.edit_message_text(
             f"👕 *Yükleme Modu*\n\n"
             f"Yeni mod: **{mode_desc}**\n\n"
             f"• *Çift Mod:* Eşleşen Shirt ve Pants çiftini bulup yükler.\n"
             f"• *Tekli Mod:* Sadece seçilen tipteki kıyafeti bulup yükler.\n"
-            f"• *3D UGC Mod:* Aksesuar modellerini indirip .zip olarak hazırlar. Yükleme yapılmaz.\n\n"
+            f"• *3D UGC Üretici:* Açıklama + opsiyonel görsel alır, TRELLIS AI ile GLB model üretir.\n\n"
             f"Ayarlar kaydedildi. Ana menüye dönüyorsunuz…",
             reply_markup=settings_keyboard(),
             parse_mode="Markdown"
         )
-
-    elif data == "set_ugc_cat_menu":
-        cat_map = {
-            8: "🎩 Hat", 41: "💇 Hair", 42: "🎭 Face", 43: "🧣 Neck",
-            44: "🎖 Shoulder", 45: "🛡 Front", 46: "🎒 Back", 47: "ベルト Waist"
-        }
-        kb = []
-        for cat_id, name in cat_map.items():
-            kb.append([InlineKeyboardButton(name, callback_data=f"save_ugc_cat_{cat_id}")])
-        kb.append([InlineKeyboardButton("⬅️ Geri", callback_data="settings")])
-        await q.edit_message_text("📦 *3D UGC Kategori Seçimi*", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
-
-    elif data.startswith("save_ugc_cat_"):
-        cat_id = int(data.split("_")[-1])
-        cfg = load_roblox_config()
-        cfg["UGC_CAT"] = cat_id
-        save_roblox_config(cfg)
-        await q.answer("UGC Kategorisi Kaydedildi ✅")
-        await q.edit_message_text("⚙️ *Ayarlar*\nDeğiştirmek istediğin ayara tıkla:", reply_markup=settings_keyboard(), parse_mode="Markdown")
 
     # ── TikTok callbacks ──
     elif data == "toggle_tiktok":
@@ -1303,14 +1280,16 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         cfg = load_roblox_config()
         if cfg.get("PAIR_MODE", "pair") == "ugc":
-            kb = [
-                [InlineKeyboardButton("🎩  Hair (Saç)", callback_data="ugc_cat_41"), InlineKeyboardButton("🧢  Hat (Şapka)", callback_data="ugc_cat_8")],
-                [InlineKeyboardButton("😎  Face (Yüz)", callback_data="ugc_cat_42"), InlineKeyboardButton("🧣  Neck (Boyun)", callback_data="ugc_cat_43")],
-                [InlineKeyboardButton("💪  Shoulder (Omuz)", callback_data="ugc_cat_44"), InlineKeyboardButton("👕  Front (Ön)", callback_data="ugc_cat_45")],
-                [InlineKeyboardButton("🎒  Back (Sırt)", callback_data="ugc_cat_46"), InlineKeyboardButton("👖  Waist (Bel)", callback_data="ugc_cat_47")],
-                [InlineKeyboardButton("⬅️  İptal", callback_data="main")]
-            ]
-            await q.edit_message_text("📦 *3D UGC İndirme Aktif*\n\nAramak istediğin aksesuar kategorisini seç:", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+            ctx.user_data["awaiting"] = "ugc_gen_keyword"
+            ctx.user_data["ugc_ref_image_bytes"] = None
+            await q.edit_message_text(
+                "🎨 *3D UGC Üretici — İş Başlat*\n\n"
+                "Üretmek istediğin aksesuar için açıklama yaz:\n\n"
+                "📌 *Örnek:* `glowing anime sword`\n"
+                "📌 *Örnek:* `cute witch hat, neon crown`\n\n"
+                "Roblox UGC satışı için GLB model üretilecek.",
+                reply_markup=back_keyboard(), parse_mode="Markdown"
+            )
         else:
             ctx.user_data["awaiting"] = "keyword"
             await q.edit_message_text(
@@ -1321,20 +1300,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "Anime, oyun, sporcu… ne olursa yaz:",
                 reply_markup=back_keyboard(), parse_mode="Markdown"
             )
-
-    elif data.startswith("ugc_cat_"):
-        cat_id = int(data.split("_")[2])
-        ctx.user_data["ugc_category"] = cat_id
-        ctx.user_data["awaiting"] = "keyword"
-        
-        cat_names = {8: "Hat (Şapka)", 41: "Hair (Saç)", 42: "Face (Yüz)", 43: "Neck (Boyun)", 44: "Shoulder (Omuz)", 45: "Front (Ön)", 46: "Back (Sırt)", 47: "Waist (Bel)"}
-        c_name = cat_names.get(cat_id, "Bilinmeyen")
-        
-        await q.edit_message_text(
-            f"📦 *Kategori Seçildi:* {c_name}\n\n"
-            "Aramak istediğin keyword(ler)i yaz (Örn: `spiderman` veya `naruto, anime`):",
-            reply_markup=back_keyboard(), parse_mode="Markdown"
-        )
 
     # ── Yardım Menüsü ──
     elif data == "help":
@@ -1357,8 +1322,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == "help_settings":
         cfg = load_roblox_config()
         pair_mode = cfg.get("PAIR_MODE", "pair")
-        target_label = "çift" if pair_mode == "pair" else "item"
-        target_desc = "shirt+pants çift" if pair_mode == "pair" else "shirt item"
+        target_label = "çift" if pair_mode == "pair" else ("item" if pair_mode == "single" else "3D model")
+        target_desc = "shirt+pants çift" if pair_mode == "pair" else ("shirt item" if pair_mode == "single" else "3D UGC model")
         await q.edit_message_text(
             "⚙️ *Ayarlar Hakkında*\n\n"
             f"💰 *Fiyat* (`{cfg['PRICE']}` Robux) — Kıyafetlerin satış fiyatı\n\n"
@@ -1389,8 +1354,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "En popüler moddur. Bot bir Shirt bulduğunda ona tam uyumlu olan Pants'i de arar ve ikisini beraber yükler. Açıklamalarda birbirine link verme (cross-link) otomatik yapılır.\n\n"
             "2️⃣ *Tekli Mod (Single):* \n"
             "Sadece seçilen tipte (yalnızca Shirt veya yalnızca Pants) arama yapar ve tek tek yükler.\n\n"
-            "3️⃣ *3D UGC Mod (Aksesuar):* \n"
-            "Katalogdaki 3D aksesuarları (Şapka, Saç vb.) bulur ve `.zip` olarak size sunar. Bu modda yükleme yapılmaz, sadece dosya teslim edilir.",
+            "3️⃣ *3D UGC Üretici (AI Model):* \n"
+            "Açıklama (ve opsiyonel referans görsel) vererek Roblox UGC satışı için sıfırdan GLB 3D model üretir. TRELLIS AI kullanır, 2-5 dk sürer. Onay akışı diğer modlarla aynı şekilde işler.",
             reply_markup=help_keyboard(), parse_mode="Markdown"
         )
 
@@ -1437,6 +1402,42 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         keyword_list = [k.strip() for k in text.split(",") if k.strip()]
         await start_job(update, ctx, keyword_list)
+
+    elif awaiting == "ugc_gen_keyword":
+        ctx.user_data["awaiting"] = None
+        if _job_info["status"] == "running":
+            await update.message.reply_text("⚠️ Zaten bir iş çalışıyor.", reply_markup=main_menu_keyboard())
+            return
+        keyword_list = [k.strip() for k in text.split(",") if k.strip()]
+        if not keyword_list:
+            await update.message.reply_text("❌ Geçersiz açıklama. Tekrar dene.", reply_markup=back_keyboard())
+            return
+        ctx.user_data["ugc_gen_keywords"] = keyword_list
+        ctx.user_data["ugc_ref_image_bytes"] = None
+        ctx.user_data["awaiting"] = "ugc_gen_image"
+        kws = ", ".join(f"`{k}`" for k in keyword_list)
+        await update.message.reply_text(
+            f"✅ *Açıklama alındı:* {kws}\n\n"
+            "📸 *Referans görsel var mı?* (Opsiyonel)\n\n"
+            "• Varsa bir fotoğraf gönder — AI görsel bazlı üretir\n"
+            "• Yoksa *Atla* yaz — AI açıklama bazlı üretir",
+            reply_markup=back_keyboard(), parse_mode="Markdown"
+        )
+
+    elif awaiting == "ugc_gen_image":
+        lower = text.lower().strip()
+        if lower in ("atla", "skip", "hayir", "hayır", "no", "-"):
+            ctx.user_data["awaiting"] = None
+            await update.message.reply_text(
+                "▶️ *Görsel atlandı, üretim başlatılıyor...*",
+                reply_markup=main_menu_keyboard(), parse_mode="Markdown"
+            )
+            await _start_ugc_gen_job(update, ctx)
+        else:
+            await update.message.reply_text(
+                "📸 Fotoğraf gönderin veya `Atla` yazın.",
+                reply_markup=back_keyboard(), parse_mode="Markdown"
+            )
 
     elif awaiting == "price":
         ctx.user_data["awaiting"] = None
@@ -1634,6 +1635,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 pass
         except Exception as e:
             Logger.error(f"3D Model hatası: {e}")
+            Logger.error(f"Traceback:\n{traceback.format_exc()}")
             err_str = str(e)
             if "ZeroGPU quotas" in err_str:
                 err_text = (
@@ -1648,7 +1650,7 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             else:
                 err_text = (
                     f"❌ *3D Model üretimi başarısız.*\n\n"
-                    f"Hata: `{err_str[:200].replace('`', '')}`\n\n"
+                    f"Hata: {err_str[:200].replace(chr(96),'').replace('*','').replace('_',' ')}\n\n"
                     f"TRELLIS Space meşgul olabilir, biraz sonra tekrar dene."
                 )
             await status_msg.edit_text(
@@ -1669,12 +1671,10 @@ async def start_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE, keyword_list
     global _active_task
     cfg    = load_roblox_config()
     cookie = load_cookie()
-    
-    ugc_cat = cfg.get("UGC_CAT", 8)
 
     target_label = "çift" if cfg.get('PAIR_MODE', 'pair') == 'pair' else "item"
-    if cfg.get('PAIR_MODE') == 'ugc': target_label = "3D asset"
-    
+    if cfg.get('PAIR_MODE') == 'ugc': target_label = "3D model"
+
     start_msg = await update.effective_message.reply_text(
         f"🚀 *İş Başladı!*\n\n"
         f"🔍 Keyword(ler): `{'`, `'.join(keyword_list)}`\n"
@@ -1682,11 +1682,34 @@ async def start_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE, keyword_list
         f"⚙️ Hazırlanıyor, lütfen bekle…",
         parse_mode="Markdown"
     )
-    # Store the message so job_task can delete it when first status arrives
     ctx.user_data["last_status_msg_id"] = start_msg.message_id
 
     _job_stop.clear()
-    _active_task = asyncio.create_task(job_task(update, ctx, keyword_list, cfg, cookie, ugc_cat))
+    _active_task = asyncio.create_task(job_task(update, ctx, keyword_list, cfg, cookie))
+
+
+async def _start_ugc_gen_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Launches job_task for 3D UGC generation mode."""
+    global _active_task
+    keyword_list = ctx.user_data.pop("ugc_gen_keywords", [])
+    if not keyword_list:
+        await update.effective_message.reply_text("❌ Keyword bulunamadı, lütfen tekrar başlat.", reply_markup=main_menu_keyboard())
+        return
+
+    cfg    = load_roblox_config()
+    cookie = load_cookie()
+
+    start_msg = await update.effective_message.reply_text(
+        f"🎨 *3D UGC Üretim Başladı!*\n\n"
+        f"🔍 Açıklama(lar): `{'`, `'.join(keyword_list)}`\n"
+        f"🤖 TRELLIS AI ile model üretiliyor...\n\n"
+        f"_2-5 dakika sürebilir._",
+        parse_mode="Markdown"
+    )
+    ctx.user_data["last_status_msg_id"] = start_msg.message_id
+    _job_info["status"] = "running"
+    _job_stop.clear()
+    _active_task = asyncio.create_task(job_task(update, ctx, keyword_list, cfg, cookie))
 
 # ─── TikTok Yayınlama ─────────────────────────────────────────────────────────
 async def _publish_to_tiktok(
@@ -1762,7 +1785,7 @@ async def _publish_to_tiktok(
 
 
 # ─── Background job (Async Task) ──────────────────────────────────────────────
-async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_list, cfg, cookie, ugc_cat=None):
+async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_list, cfg, cookie):
     # Rolling status message — deletes previous before sending new one
     _last_status_msg = [None]  # list so inner function can mutate it
 
@@ -1782,7 +1805,8 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                     await update.get_bot().delete_message(update.effective_chat.id, prev_id)
                 except Exception:
                     pass
-            sent = await update.effective_message.reply_text(msg, parse_mode="Markdown", **kwargs)
+            pm = kwargs.pop("parse_mode", "Markdown")
+            sent = await update.effective_message.reply_text(msg, parse_mode=pm, **kwargs)
             _last_status_msg[0] = sent
             return sent
         except Exception as e:
@@ -2197,151 +2221,164 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                             ))
 
             elif pair_mode == "ugc":
-                if not ugc_cat:
-                    await send("❌ Hata: UGC kategorisi seçilmemiş.")
-                    break
-                
-                cat_names = {8: "Hat", 41: "Hair", 42: "Face", 43: "Neck", 44: "Shoulder", 45: "Front", 46: "Back", 47: "Waist"}
-                c_name = cat_names.get(ugc_cat, "UGC")
-                    
-                async for asset_id, item_url, creator, current_item_name in roblox.search_and_yield_assets(keyword, asset_type=ugc_cat):
-                    if _job_stop.is_set() or items_found >= target_pairs: break
-                    
+                # ── AI 3D UGC Generation Mode ──
+                from scrapers.model3d_engine import Model3DEngine
+                import tempfile, uuid as _uuid
+                engine = Model3DEngine()
+                ugc_ref_bytes = context.user_data.get("ugc_ref_image_bytes")
+
+                while items_found < target_pairs and not _job_stop.is_set():
                     items_found += 1
                     _job_info["pairs_done"] = items_found
-                    safe_name = md_escape(current_item_name)
-                    await send(f"⏳ *{md_escape(keyword.title())}* için {items_found}. 3D Asset Hazırlanıyor: `{safe_name}`...")
-                    
-                    zip_path = await downloader.download_ugc_asset(asset_id, keyword, c_name)
-                    if not zip_path: 
+
+                    await send(
+                        f"🤖 *{md_escape(keyword)}* icin 3D model uretiliyor... ({items_found}/{target_pairs})\n"
+                        f"Hunyuan3D-2 AI calisiyor, 2-5 dakika surebilir."
+                    )
+
+                    glb_path = None
+                    preview_path = None
+                    try:
+                        if ugc_ref_bytes:
+                            glb_path = await asyncio.to_thread(engine.image_to_3d_sync, ugc_ref_bytes)
+                            preview_path = os.path.join(
+                                tempfile.gettempdir(),
+                                f"ugc_prev_{_uuid.uuid4().hex[:6]}.png"
+                            )
+                            with open(preview_path, "wb") as _pf:
+                                _pf.write(ugc_ref_bytes)
+                        else:
+                            glb_path, preview_path = await asyncio.to_thread(
+                                engine.text_to_3d_with_preview, keyword
+                            )
+                    except Exception as gen_err:
+                        Logger.error(f"3D üretim hatası ({keyword}): {gen_err}")
+                        Logger.error(f"Traceback:\n{traceback.format_exc()}")
+                        err_str = str(gen_err)
+                        safe_err = err_str[:200]
+                        if "ZeroGPU" in err_str:
+                            await send(
+                                "❌ Hugging Face ZeroGPU limiti!\n"
+                                "bot_config.txt dosyasına HF_TOKEN=hf_... ekleyip botu yeniden başlat.",
+                                parse_mode=None,
+                            )
+                            break
+                        elif "kullanil" in err_str or "space" in err_str.lower() or "Tum 3D" in err_str:
+                            await send(
+                                "❌ 3D AI Space'leri su an kullanilamiyor.\n\n"
+                                "HuggingFace altyapi sorunu — tum denenen space'ler CONFIG_ERROR veya uyumsuz API.\n"
+                                "Birkac dakika sonra tekrar dene.",
+                                parse_mode=None,
+                            )
+                            break
+                        await send(f"❌ Model uretimi basarisiz:\n{safe_err}\nAtlaniyor...", parse_mode=None)
                         items_found -= 1
                         _job_info["pairs_done"] = items_found
-                        await send(f"❌ *{md_escape(current_item_name)}* içeriği indirilemedi. Geçiliyor...")
-                        continue
+                        break
 
-                    # İndirilen mesh/texture üzerinde sunucu tarafı dönüşüm (Blender yok; bkz. ugc_mesh_processor)
-                    try:
-                        processed_zip = await asyncio.to_thread(process_ugc_catalog_zip, zip_path, keyword)
-                        if processed_zip:
-                            zip_path = processed_zip
-                    except Exception as proc_err:
-                        Logger.warn(f"UGC mesh işleme atlandı: {proc_err}")
+                    safe_kw = "".join(c for c in keyword[:20] if c.isalnum() or c in " _-").strip().replace(" ", "_")
+                    glb_filename = f"{safe_kw}_{items_found}.glb"
+                    unique_id = f"ugcgen_{items_found}_{safe_kw}"
 
-                    ugc_pack_label = (
-                        "işlenmiş paket (original + processed)"
-                        if "_processed" in os.path.basename(zip_path)
-                        else "ham indirme"
-                    )
-                    
-                    thumb_url = await roblox.get_thumbnail(asset_id)
-                    
                     if require_approval:
-                        # ── Approval flow for UGC ──
-                        unique_id = f"{asset_id}_ugc"
                         event = asyncio.Event()
                         with _pending_lock:
                             _pending_events[unique_id] = event
-                            _pending_items[unique_id] = {"zip_path": zip_path, "asset_id": asset_id, "name": current_item_name, "url": item_url}
-                        
+                            _pending_items[unique_id] = {"glb_path": glb_path, "keyword": keyword}
+
                         approval_kb = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}")],
-                            [InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}"),
+                            [InlineKeyboardButton("✅ Onayla & İndir", callback_data=f"approve_{unique_id}")],
+                            [InlineKeyboardButton("🔄 Yenisini Üret", callback_data=f"skip_{unique_id}"),
                              InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}")],
                             [InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
                         ])
-                        
+                        caption = (
+                            f"🎨 *3D Model Hazır — Onay Bekliyor* ({items_found}/{target_pairs})\n\n"
+                            f"📝 Açıklama: `{md_escape(keyword)}`\n"
+                            f"📦 Dosya: `{glb_filename}`\n\n"
+                            f"Modeli onaylıyor musun?"
+                        )
                         try:
-                            if thumb_url:
-                                await update.effective_message.reply_photo(
-                                    photo=thumb_url,
-                                    caption=(
-                                        f"⏳ *{items_found}. 3D Asset Onay Bekliyor*\n\n"
-                                        f"📦 Tip: `{md_escape(c_name)}`\n"
-                                        f"📝 Ad: `{md_escape(current_item_name)}`\n"
-                                        f"🔗 Roblox: {item_url}\n\n"
-                                        f"İndirilsin mi?"
-                                    ),
-                                    reply_markup=approval_kb,
-                                    parse_mode="Markdown"
-                                )
+                            if preview_path and os.path.exists(preview_path):
+                                with open(preview_path, "rb") as _pf:
+                                    await update.effective_message.reply_photo(
+                                        photo=_pf, caption=caption,
+                                        reply_markup=approval_kb, parse_mode="Markdown"
+                                    )
                             else:
-                                await send(
-                                    f"⏳ *{items_found}. 3D Asset Onay Bekliyor*\n\n"
-                                    f"📦 Tip: `{md_escape(c_name)}`\n"
-                                    f"📝 Ad: `{md_escape(current_item_name)}`\n"
-                                    f"🔗 Roblox: {item_url}\n\n"
-                                    f"İndirilsin mi?",
-                                    reply_markup=approval_kb
-                                )
-                        except Exception as e:
-                            Logger.error(f"UGC Önizleme hatası: {e}")
-                            await send(f"⚠️ Önizleme gönderilemeçdi ama onay bekleniyor...", reply_markup=approval_kb)
-                        
+                                await send(caption, reply_markup=approval_kb)
+                        except Exception as prev_err:
+                            Logger.warn(f"Önizleme gönderim hatası: {prev_err}")
+                            await send(caption, reply_markup=approval_kb)
+
                         try:
-                            await asyncio.wait_for(event.wait(), timeout=360)
+                            await asyncio.wait_for(event.wait(), timeout=600)
                             with _pending_lock:
                                 status = _pending_status.pop(unique_id, "skip")
                                 _pending_events.pop(unique_id, None)
-                                item_data = _pending_items.pop(unique_id, None)
-                            
-                            if status == "approve" and item_data:
-                                # Send the ZIP
+                                _pending_items.pop(unique_id, None)
+
+                            if status == "approve":
                                 try:
-                                    with open(zip_path, "rb") as f_zip:
+                                    with open(glb_path, "rb") as _gf:
                                         await update.effective_message.reply_document(
-                                            document=f_zip,
+                                            document=_gf, filename=glb_filename,
                                             caption=(
-                                                f"📦 *3D UGC ({ugc_pack_label}):* `{md_escape(current_item_name)}`\n"
-                                                f"`processed/` klasörü + `README_LEGAL.txt` (yükleme/ToS)\n"
-                                                f"🔗 {item_url}"
+                                                f"🎲 *3D UGC Model:* `{md_escape(keyword)}`\n"
+                                                f"Roblox Studio'ya import edin."
                                             ),
                                             parse_mode="Markdown"
                                         )
                                     upload_count += 1
                                     _job_info["uploads"] = upload_count
-                                    Logger.success(f"{current_item_name} başarıyla gönderildi.")
-                                except Exception as e:
-                                    Logger.error(f"ZIP Gönderme hatası: {e}")
-                                    await send(f"⚠️ `{current_item_name}` gönderilemedi: {e}")
+                                    Logger.success(f"3D UGC teslim edildi: {glb_filename}")
+                                except Exception as send_err:
+                                    Logger.error(f"GLB gönderme hatası: {send_err}")
+                                    await send(f"⚠️ GLB gönderilemedi: {send_err}")
                             elif status == "stop":
                                 _job_stop.set()
                                 await send("🛑 *İş sonlandırıldı.*", reply_markup=back_keyboard())
                                 break
                             elif status == "skip":
-                                items_found -= 1  # Yenisini bul — aynı slotu tekrar doldur
-                            # reject → items_found değişmez, sıradakine geç
+                                items_found -= 1  # aynı slotu tekrar doldur (yeni üretim)
                         except asyncio.TimeoutError:
                             items_found -= 1
-                            await send("❌ Onay zaman aşımı, atlandı.")
-                    
+                            await send("⏰ Onay zaman aşımı, atlandı.")
+
                     else:
-                        # No approval needed — send immediately
+                        # Onay gerekmez — direkt gönder
                         try:
-                            if thumb_url:
-                                await update.effective_message.reply_photo(
-                                    photo=thumb_url,
-                                    caption=f"🖼️ *Görsel Önizleme:* `{current_item_name}`",
-                                    parse_mode="Markdown"
-                                )
-                            with open(zip_path, "rb") as f_zip:
+                            if preview_path and os.path.exists(preview_path):
+                                with open(preview_path, "rb") as _pf:
+                                    await update.effective_message.reply_photo(
+                                        photo=_pf,
+                                        caption=f"🎨 *Önizleme:* `{md_escape(keyword)}`",
+                                        parse_mode="Markdown"
+                                    )
+                            with open(glb_path, "rb") as _gf:
                                 await update.effective_message.reply_document(
-                                    document=f_zip,
+                                    document=_gf, filename=glb_filename,
                                     caption=(
-                                        f"📦 *3D UGC ({ugc_pack_label}):* `{md_escape(current_item_name)}`\n"
-                                        f"`processed/` + yasal uyarılar\n"
-                                        f"🔗 {item_url}"
+                                        f"🎲 *3D UGC Model:* `{md_escape(keyword)}`\n"
+                                        f"Roblox Studio'ya import edin."
                                     ),
                                     parse_mode="Markdown"
                                 )
                             upload_count += 1
                             _job_info["uploads"] = upload_count
-                            Logger.success(f"{current_item_name} başarıyla gönderildi.")
-                        except Exception as e:
-                            Logger.error(f"ZIP Gönderme hatası: {e}")
-                            await send(f"⚠️ `{current_item_name}` gönderilemedi: {e}")
+                            Logger.success(f"3D UGC teslim edildi: {glb_filename}")
+                        except Exception as send_err:
+                            Logger.error(f"GLB gönderme hatası: {send_err}")
+                            await send(f"⚠️ GLB gönderilemedi: {send_err}")
+
+                    # Geçici dosyaları temizle
+                    for _p in [glb_path, preview_path]:
+                        if _p:
+                            try: os.remove(_p)
+                            except Exception: pass
 
         # Final count message logic
-        finish_label = "yüklenen" if pair_mode != "ugc" else "gönderilen"
+        finish_label = "yüklenen" if pair_mode != "ugc" else "teslim edilen GLB"
         await send(f"🏁 İş tamamlandı! Toplam {finish_label}: `{upload_count}`", reply_markup=back_keyboard())
     except Exception as e:
         Logger.error(f"İŞ SIRASINDA KRİTİK HATA: {e}")
@@ -2390,8 +2427,28 @@ async def live_sale_notifier_job(context: ContextTypes.DEFAULT_TYPE):
 async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return await deny(update)
     awaiting = ctx.user_data.get("awaiting")
-    if awaiting != "model3d_image_wait":
-        # Not in 3D mode — ignore silently
+    if awaiting not in ("model3d_image_wait", "ugc_gen_image"):
+        return
+
+    # ── UGC Gen mode: store image bytes then start job ──
+    if awaiting == "ugc_gen_image":
+        ctx.user_data["awaiting"] = None
+        if update.message.photo:
+            photo_file = await update.message.photo[-1].get_file()
+        elif update.message.document:
+            photo_file = await update.message.document.get_file()
+        else:
+            await update.message.reply_text("❌ Geçersiz dosya. Lütfen bir fotoğraf gönder veya 'Atla' yaz.")
+            return
+        import io as _io
+        buf = _io.BytesIO()
+        await photo_file.download_to_memory(buf)
+        ctx.user_data["ugc_ref_image_bytes"] = buf.getvalue()
+        await update.message.reply_text(
+            "📸 *Referans görsel alındı!* Üretim başlatılıyor...",
+            reply_markup=main_menu_keyboard(), parse_mode="Markdown"
+        )
+        await _start_ugc_gen_job(update, ctx)
         return
 
     ctx.user_data["awaiting"] = None
