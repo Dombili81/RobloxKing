@@ -46,6 +46,7 @@ class GroupFinanceMonitor:
         """
         results = {
             "pending": 0,
+            "community_funds": 0,
             "item_sales_robux": 0,
             "user_balance": 0,
             "user_name": "Bilinmeyen",
@@ -84,6 +85,15 @@ class GroupFinanceMonitor:
             # 3. Yıllık gelir ve Toplam Ürün Sayısı (P/L için)
             results["yearly_revenue"] = self.get_yearly_revenue()
             results["total_items"] = self.count_published_items()
+
+            # 4. Grup bakiyesi (Community Funds)
+            try:
+                cf_url = f"https://economy.roblox.com/v1/groups/{self.group_id}/currency"
+                cf_r = self.session.get(cf_url, timeout=20)
+                if cf_r.status_code == 200:
+                    results["community_funds"] = cf_r.json().get("robux", 0)
+            except Exception:
+                pass
 
         except Exception as e:
             results["group_error"] = str(e)

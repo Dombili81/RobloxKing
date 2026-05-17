@@ -1,4 +1,4 @@
-﻿"""
+"""
 bot.py – Butonlu Telegram Botu (Roblox Otomasyon)
 """
 
@@ -196,6 +196,7 @@ WAITING_PAIRS    = 4
 # ─── Job state ────────────────────────────────────────────────────────────────
 _job_stop  = threading.Event()
 _job_info  = {"status": "idle", "keywords": [], "pairs_done": 0, "uploads": 0}
+_active_task = None
 # Global Ayarlar
 TARGET_PAIRS = 5  # Varsayılan
 
@@ -748,6 +749,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             summary = await asyncio.to_thread(monitor.get_summary)
             
             pending = summary.get("pending", 0)
+            community_funds = summary.get("community_funds", 0)
             sales   = summary.get("item_sales_robux", 0)
             balance = summary.get("user_balance", 0)
             u_name  = summary.get("user_name", "Bilinmeyen")
@@ -757,8 +759,11 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if g_err:
                 group_text = f"⚠️ *Grup Satışları:* `{md_escape(str(g_err))}`"
             else:
+                total_funds = pending + community_funds
                 group_text = (
+                    f"🏦 Community Funds: `{community_funds} R$`\n"
                     f"💸 Bekleyen Robux: `{pending} R$`\n"
+                    f"🧮 Total: `{total_funds} R$`\n"
                     f"🛍️ Bugün Satışlardan Gelen: `{sales} R$`"
                 )
 
