@@ -1239,6 +1239,24 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             await q.answer("⚠️ Geri dönecek ürün bulunamadı.", show_alert=True)
 
+    elif data.startswith("forward_"):
+        unique_id = data[8:]  # strip 'forward_'
+        event = None
+        with _pending_lock:
+            if unique_id in _pending_items:
+                _pending_status[unique_id] = "forward"
+                event = _pending_events.get(unique_id)
+
+        if event:
+            event.set()
+            try:
+                await q.message.delete()
+            except Exception:
+                pass
+            await q.answer("➡️ İleri gidiliyor...")
+        else:
+            await q.answer("⚠️ İleri gidecek ürün bulunamadı.", show_alert=True)
+
     elif data.startswith("approve_") or data.startswith("reject_") or data.startswith("skip_") or data.startswith("stop_job_"):
         # Parse action and unique_id
         if data.startswith("stop_job_"):
@@ -1909,10 +1927,11 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         with _pending_lock:
                             _pending_events[unique_id] = event
                             _pending_items[unique_id] = {
-                                "shirt_path": shirt_path, "pants_path": pants_path, 
+                                "shirt_path": shirt_path, "pants_path": pants_path,
                                 "shirt_id": asset_id, "pants_id": pants_id,
                                 "metadata": _meta,
-                                "history": context.user_data.get(f"last_pair_{keyword}")
+                                "history": context.user_data.get(f"last_pair_{keyword}"),
+                                "future": None,
                             }
                         
                         # Preview Images
@@ -1930,7 +1949,8 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         while not _job_stop.is_set():
                             with _pending_lock:
                                 m = _pending_items[unique_id]["metadata"]
-                                has_hist = bool(_pending_items[unique_id]["history"] or context.user_data.get(f"last_pair_{keyword}"))
+                                has_hist = bool(_pending_items[unique_id].get("history"))
+                                has_future = bool(_pending_items[unique_id].get("future"))
 
                             dup_warn = "⚠️ *DİKKAT: Bu çift daha önce yüklendi!*\n\n" if is_duplicate else ""
                             caption = (
@@ -1946,10 +1966,14 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                  InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}")],
                                 [InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
                                 [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")],
-                                [InlineKeyboardButton("🎬 Test TikTok Videosu", callback_data=f"test_tiktok_{unique_id}")],
                             ]
+                            nav_row = []
                             if has_hist:
-                                kb_buttons.append([InlineKeyboardButton("⬅️ Geri Dön (Set)", callback_data=f"back_{unique_id}")])
+                                nav_row.append(InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"back_{unique_id}"))
+                            if has_future:
+                                nav_row.append(InlineKeyboardButton("➡️ İleri Git", callback_data=f"forward_{unique_id}"))
+                            if nav_row:
+                                kb_buttons.append(nav_row)
 
                             kb_buttons.append([InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")])
                             
@@ -1968,40 +1992,44 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                     event.clear()
                                 
                                 if status == "edit": continue
-                                elif status == "back":
-                                    with _pending_lock: prev = _pending_items[unique_id].get("history")
-                                    if prev:
-                                        curr_data = {
-                                            "shirt_path": shirt_path, "pants_path": pants_path, 
-                                            "shirt_id": asset_id, "pants_id": pants_id, "metadata": _pending_items[unique_id]["metadata"]
+                                elif status in ("back", "forward"):
+                                    with _pending_lock:
+                                        target = _pending_items[unique_id].get("history" if status == "back" else "future")
+                                    if target:
+                                        curr_snapshot = {
+                                            "shirt_id": asset_id, "pants_id": pants_id,
+                                            "shirt_path": shirt_path, "pants_path": pants_path,
+                                            "metadata": _pending_items[unique_id]["metadata"],
+                                            "history": _pending_items[unique_id].get("history"),
+                                            "future": _pending_items[unique_id].get("future"),
                                         }
-                                        asset_id, pants_id = prev["shirt_id"], prev["pants_id"]
-                                        shirt_path, pants_path = prev["shirt_path"], prev["pants_path"]
+                                        asset_id, pants_id = target["shirt_id"], target["pants_id"]
+                                        shirt_path, pants_path = target["shirt_path"], target["pants_path"]
                                         with _pending_lock:
                                             _pending_items[unique_id].update({
                                                 "shirt_id": asset_id, "pants_id": pants_id,
                                                 "shirt_path": shirt_path, "pants_path": pants_path,
-                                                "metadata": prev["metadata"], "history": curr_data
+                                                "metadata": target["metadata"],
+                                                "history": target.get("history") if status == "back" else curr_snapshot,
+                                                "future": curr_snapshot if status == "back" else target.get("future"),
                                             })
-                                        await send("⬅️ *Önceki çift geri yüklendi.*")
-                                        # Reset preview_msg so it re-sends photos
+                                        label = "Önceki" if status == "back" else "Sonraki"
+                                        await send(f"{'⬅️' if status == 'back' else '➡️'} *{label} çift yüklendi.*")
                                         if preview_msg:
                                             try: await preview_msg.delete()
                                             except: pass
                                         preview_msg = None
-                                        
-                                        # Re-send media group
                                         try:
                                             with open(shirt_path, "rb") as s_img, open(pants_path, "rb") as p_img:
                                                 await update.effective_message.reply_media_group([
-                                                    InputMediaPhoto(s_img, caption=f"👕 *Shirt* (Geri Yüklendi)"),
-                                                    InputMediaPhoto(p_img, caption=f"👖 *Pants* (Geri Yüklendi)")
+                                                    InputMediaPhoto(s_img, caption=f"👕 *Shirt*"),
+                                                    InputMediaPhoto(p_img, caption=f"👖 *Pants*")
                                                 ])
                                         except Exception as e:
-                                            Logger.error(f"Geri yükleme görsel hatası: {e}")
+                                            Logger.error(f"Gezinme görsel hatası: {e}")
                                         continue
                                     else:
-                                        await send("⚠️ Geri dönecek ürün bulunamadı."); continue
+                                        await send("⚠️ Gidecek ürün bulunamadı."); continue
                                 elif status == "approve":
                                     with _pending_lock:
                                         context.user_data[f"last_pair_{keyword}"] = _pending_items[unique_id]
@@ -2073,7 +2101,8 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                             _pending_items[unique_id] = {
                                 "path": out_path, "asset_id": asset_id, "type": type_name,
                                 "metadata": _meta,
-                                "history": context.user_data.get(f"last_item_{keyword}_{single_type}")
+                                "history": context.user_data.get(f"last_item_{keyword}_{single_type}"),
+                                "future": None,
                             }
                         
                         # Send initial preview
@@ -2094,19 +2123,20 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                         [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
                                          InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
                                         [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")] +
-                                        ([InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"back_{unique_id}")] if _pending_items[unique_id]["history"] else []),
-                                        [InlineKeyboardButton("🎬 Test TikTok Videosu", callback_data=f"test_tiktok_{unique_id}")],
+                                        ([InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"back_{unique_id}")] if _pending_items[unique_id].get("history") else []) +
+                                        ([InlineKeyboardButton("➡️ İleri Git", callback_data=f"forward_{unique_id}")] if _pending_items[unique_id].get("future") else []),
                                         [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
                                          InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
                                     ]),
                                     parse_mode="Markdown"
                                 )
                         except Exception as e:
+                            _fb_nav = ([InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"back_{unique_id}")] if _pending_items[unique_id].get("history") else []) + \
+                                      ([InlineKeyboardButton("➡️ İleri Git", callback_data=f"forward_{unique_id}")] if _pending_items[unique_id].get("future") else [])
                             preview_msg = await send(f"⚠️ Önizleme hatası: {e}\n\n{caption}", reply_markup=InlineKeyboardMarkup([
                                 [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
                                  InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
-                                [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")],
-                                [InlineKeyboardButton("🎬 Test TikTok Videosu", callback_data=f"test_tiktok_{unique_id}")],
+                                [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_menu_{unique_id}")] + _fb_nav,
                                 [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
                                  InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
                             ]))
@@ -2121,45 +2151,56 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                                 Logger.info(f"🛎 Status received: {status} for {unique_id}")
 
                                 if status == "edit" or status == "back":
-                                    if status == "back":
+                                    if status in ("back", "forward"):
                                         with _pending_lock:
-                                            prev = _pending_items[unique_id].get("history")
-                                        if prev:
-                                            curr_data = {"path": out_path, "asset_id": asset_id, "metadata": _pending_items[unique_id]["metadata"]}
-                                            # Restore previous
-                                            asset_id, out_path = prev["asset_id"], prev["path"]
+                                            target = _pending_items[unique_id].get("history" if status == "back" else "future")
+                                        if target:
+                                            curr_snapshot = {
+                                                "asset_id": asset_id, "path": out_path,
+                                                "metadata": _pending_items[unique_id]["metadata"],
+                                                "history": _pending_items[unique_id].get("history"),
+                                                "future": _pending_items[unique_id].get("future"),
+                                            }
+                                            asset_id, out_path = target["asset_id"], target["path"]
                                             with _pending_lock:
                                                 _pending_items[unique_id].update({
-                                                    "asset_id": asset_id, "path": out_path, 
-                                                    "metadata": prev["metadata"], "history": curr_data
+                                                    "asset_id": asset_id, "path": out_path,
+                                                    "metadata": target["metadata"],
+                                                    "history": target.get("history") if status == "back" else curr_snapshot,
+                                                    "future": curr_snapshot if status == "back" else target.get("future"),
                                                 })
-                                            await send("⬅️ *Önceki ürün geri yüklendi.*")
+                                            label = "Önceki" if status == "back" else "Sonraki"
+                                            await send(f"{'⬅️' if status == 'back' else '➡️'} *{label} ürün yüklendi.*")
                                         else:
-                                            await send("⚠️ Geri dönecek ürün bulunamadı."); continue
-                                    
+                                            await send("⚠️ Gidecek ürün bulunamadı."); continue
+
                                     # Update UI
                                     with _pending_lock:
                                         m = _pending_items[unique_id]["metadata"]
-                                        has_hist = bool(_pending_items[unique_id].get("history") or context.user_data.get(f"last_item_{keyword}_{single_type}"))
-                                    
+                                        has_hist = bool(_pending_items[unique_id].get("history"))
+                                        has_future = bool(_pending_items[unique_id].get("future"))
+
                                     caption = (
                                         f"{dup_warn}⏳ *{items_found}. {type_name.title()} Onay Bekliyor*\n\n"
                                         f"📝 Ad: `{md_escape(m['name'])}`\n"
                                         f"📜 Açıklama: `{md_escape(m['desc'])}`\n\n"
                                         f"Yüklensin mi?"
                                     )
+                                    nav_btns = []
+                                    if has_hist:
+                                        nav_btns.append(InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"back_{unique_id}"))
+                                    if has_future:
+                                        nav_btns.append(InlineKeyboardButton("➡️ İleri Git", callback_data=f"forward_{unique_id}"))
                                     kb = InlineKeyboardMarkup([
                                         [InlineKeyboardButton("✅ Onayla", callback_data=f"approve_{unique_id}"),
                                          InlineKeyboardButton("🔍 Yenisini Bul", callback_data=f"skip_{unique_id}")],
-                                        [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_{unique_id}")] +
-                                        ([InlineKeyboardButton("⬅️ Geri Dön", callback_data=f"back_{unique_id}")] if has_hist else []),
-                                        [InlineKeyboardButton("🎬 Test TikTok Videosu", callback_data=f"test_tiktok_{unique_id}")],
+                                        [InlineKeyboardButton("✏️ Düzenle", callback_data=f"edit_{unique_id}")] + nav_btns,
                                         [InlineKeyboardButton("❌ Reddet", callback_data=f"reject_{unique_id}"),
                                          InlineKeyboardButton("🛑 İşlemi Bitir", callback_data=f"stop_job_{unique_id}")]
                                     ])
-                                    
+
                                     try:
-                                        if status == "back" and preview_msg: # If item changed, edit media
+                                        if status in ("back", "forward") and preview_msg: # If item changed, edit media
                                             from telegram import InputMediaPhoto
                                             with open(out_path, "rb") as f_img:
                                                 try:

@@ -6,33 +6,16 @@ Akış:
      (Anime/Manga, Film/Dizi, Spor, Müzik, Oyun)
   2. Her entity için Roblox Catalog'da keyword araması yap
      → Kaç ürün var? Talep ispatlanıyor mu?
-  3. Skor = Kaynak Ağırlığı × log(Roblox Sonuç Sayısı + 1) + Firebase Bonus
-  4. Top 15 öneri sun
+  3. Skor = Kaynak Ağırlığı × Fırsat Faktörü (az rakip = yüksek skor)
+  4. Top 15 öneri sun — direkt karakter/entity adı olarak
 """
 import asyncio
 import re
 import math
-import random
 import time
 import xml.etree.ElementTree as ET
 from scrapers.firebase_db import FirebaseManager
 from scrapers.utils import Logger, make_session
-
-# ─── Template Varyantları ──────────────────────────────────────────────────
-TEMPLATES = [
-    "{name} Aesthetic",
-    "{name} Outfit",
-    "{name} Drip",
-    "Dark {name}",
-    "Soft {name}",
-    "{name} Core",
-    "{name} Grunge",
-    "{name} Alt",
-    "Vintage {name}",
-    "{name} Era",
-    "{name} Warrior",
-    "{name} Y2K",
-]
 
 # Haber jargonu — entity çıkarmada kullanılacak filtre
 HEADLINE_NOISE = {
@@ -239,34 +222,28 @@ class TrendEngine:
         unique_entities.sort(key=lambda x: x["weight"], reverse=True)
         candidates = unique_entities[:40]
 
-        # 3) Her entity için Roblox talebi kontrol et
+        # 3) Her entity için Roblox talebi kontrol et + fırsat faktörü hesapla
+        def opportunity_factor(count: int) -> float:
+            # Az rakip + popüler konu = yüksek satış ihtimali
+            if count == -1: return 1.8   # API hatası, konu popüler — tahmin
+            if count == 0:  return 0.4   # Roblox'ta talep kanıtı yok
+            if count <= 30: return 3.5   # ALTIN BÖLGE: talep var, rakip az
+            if count <= 100: return 2.0  # İyi fırsat
+            if count <= 300: return 1.0  # Orta rekabet
+            if count <= 1000: return 0.4 # Dolu pazar
+            return 0.15                  # Çok dolu, girme
+
         scored: list[dict] = []
         for entity in candidates:
             roblox_count = self._check_roblox_demand(entity["name"])
-            
-            if roblox_count == -1:
-                # Rate limit (429) veya hata - Roblox sorgusu başarısız ama konu gerçekten popüler.
-                # Tahmini bir değer atayarak konunun top listesinden düşmemesini sağlıyoruz.
-                roblox_factor = 2.5
-            elif roblox_count == 0:
-                # Roblox'ta hiç yoksa düşük puanla yine de ekle (potansiyel yeni fırsat)
-                roblox_factor = 0.5
-            else:
-                # log scale: 1 ürün=0.69, 10 ürün=2.39, 100 ürün=4.6
-                roblox_factor = math.log(roblox_count + 1)
-
-            score = entity["weight"] * roblox_factor
-
-            # Roblox'ta çok az ürün varsa = rakipsiz fırsat bonosu
-            opportunity_bonus = 1.3 if 0 < roblox_count < 50 else 1.0
-
+            score = entity["weight"] * opportunity_factor(roblox_count)
             scored.append({
                 "name": entity["name"],
                 "source": entity["source"],
                 "weight": entity["weight"],
                 "extra": entity.get("extra", ""),
                 "roblox_count": roblox_count,
-                "score": score * opportunity_bonus,
+                "score": score,
             })
 
         # 4) Sırala: en yüksek skor önce
@@ -281,17 +258,11 @@ class TrendEngine:
 
         top_candidates = list(diverse.values())[:15]
 
-        # 6) Template uygula + Firebase click bonus
-        used_templates: set = set()
+        # 6) Direkt isim kullan + Firebase click bonus + rakip etiketi
         final_list: list[dict] = []
 
         for item in top_candidates:
-            available = [t for t in TEMPLATES if t not in used_templates]
-            if not available:
-                available = TEMPLATES
-            tmpl = random.choice(available)
-            used_templates.add(tmpl)
-            kw = tmpl.replace("{name}", item["name"])
+            kw = item["name"]  # Direkt karakter/entity adı, template yok
 
             clicks = 0
             if self.db and self.db.is_active:
@@ -302,18 +273,23 @@ class TrendEngine:
                 except Exception:
                     pass
 
-            # Extra bilgiye Roblox sayısı da ekle
             roblox_count = item["roblox_count"]
             extra_parts = []
             if item.get("extra"):
                 extra_parts.append(item["extra"])
-                
+
             if roblox_count == -1:
-                extra_parts.append("🔥 Popüler Konu")
-            elif roblox_count < 50:
-                extra_parts.append(f"🆕 Az Rakip ({roblox_count} ürün)")
-            elif roblox_count < 300:
-                extra_parts.append(f"📦 {roblox_count} ürün")
+                extra_parts.append("🔥 Popüler")
+            elif roblox_count == 0:
+                extra_parts.append("🚫 Roblox'ta yok")
+            elif roblox_count <= 30:
+                extra_parts.append(f"🥇 Az Rakip ({roblox_count})")
+            elif roblox_count <= 100:
+                extra_parts.append(f"✅ İyi Fırsat ({roblox_count})")
+            elif roblox_count <= 300:
+                extra_parts.append(f"⚠️ Orta ({roblox_count})")
+            else:
+                extra_parts.append(f"🔴 Dolu ({roblox_count})")
 
             final_list.append({
                 "kw": kw,
