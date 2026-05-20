@@ -846,11 +846,17 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.user_data["awaiting"] = "pairs"
         cfg = load_roblox_config()
         pair_mode = cfg.get("PAIR_MODE", "pair")
-        target_label = "çift" if pair_mode == "pair" else "item"
-        await q.edit_message_text(
-            f"🎯 *Hedef {target_label.title()} Sayısı*\n\nŞu an: `{TARGET_PAIRS}`\n\nHer keyword için kaç {target_label} indirilsin? (1–30):",
-            reply_markup=back_keyboard(), parse_mode="Markdown"
-        )
+        if pair_mode == "ugc":
+            await q.edit_message_text(
+                f"🎯 *Hedef Model Sayısı*\n\nŞu an: `{TARGET_PAIRS}`\n\nHer açıklama için kaç 3D model üretilsin? (1–30):",
+                reply_markup=back_keyboard(), parse_mode="Markdown"
+            )
+        else:
+            target_label = "çift" if pair_mode == "pair" else "item"
+            await q.edit_message_text(
+                f"🎯 *Hedef {target_label.title()} Sayısı*\n\nŞu an: `{TARGET_PAIRS}`\n\nHer keyword için kaç {target_label} indirilsin? (1–30):",
+                reply_markup=back_keyboard(), parse_mode="Markdown"
+            )
 
     elif data == "set_cookie":
         ctx.user_data["awaiting"] = "cookie"
@@ -926,7 +932,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Yeni mod: **{mode_desc}**\n\n"
             f"• *Çift Mod:* Eşleşen Shirt ve Pants çiftini bulup yükler.\n"
             f"• *Tekli Mod:* Sadece seçilen tipteki kıyafeti bulup yükler.\n"
-            f"• *3D UGC Üretici:* Açıklama + opsiyonel görsel alır, TRELLIS AI ile GLB model üretir.\n\n"
+            f"• *3D UGC Üretici:* Açıklama + opsiyonel görsel alır, TripoSR (lokal AI) ile GLB model üretir.\n\n"
             f"Ayarlar kaydedildi. Ana menüye dönüyorsunuz…",
             reply_markup=settings_keyboard(),
             parse_mode="Markdown"
@@ -1303,14 +1309,13 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
         cfg = load_roblox_config()
         if cfg.get("PAIR_MODE", "pair") == "ugc":
-            ctx.user_data["awaiting"] = "ugc_gen_keyword"
+            ctx.user_data["awaiting"] = "ugc_gen_image"
             ctx.user_data["ugc_ref_image_bytes"] = None
+            ctx.user_data["ugc_gen_keywords"] = ["ugc_model"]
             await q.edit_message_text(
                 "🎨 *3D UGC Üretici — İş Başlat*\n\n"
-                "Üretmek istediğin aksesuar için açıklama yaz:\n\n"
-                "📌 *Örnek:* `glowing anime sword`\n"
-                "📌 *Örnek:* `cute witch hat, neon crown`\n\n"
-                "Roblox UGC satışı için GLB model üretilecek.",
+                "📸 Referans görsel gönder — TripoSR AI ile 3D modele dönüştürülecek.\n\n"
+                "Görselin olmayan kısımları otomatik temizlenir.",
                 reply_markup=back_keyboard(), parse_mode="Markdown"
             )
         else:
@@ -1378,7 +1383,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "2️⃣ *Tekli Mod (Single):* \n"
             "Sadece seçilen tipte (yalnızca Shirt veya yalnızca Pants) arama yapar ve tek tek yükler.\n\n"
             "3️⃣ *3D UGC Üretici (AI Model):* \n"
-            "Açıklama (ve opsiyonel referans görsel) vererek Roblox UGC satışı için sıfırdan GLB 3D model üretir. TRELLIS AI kullanır, 2-5 dk sürer. Onay akışı diğer modlarla aynı şekilde işler.",
+            "Açıklama (ve opsiyonel referans görsel) vererek Roblox UGC satışı için sıfırdan GLB 3D model üretir. TripoSR (lokal AI) kullanır, CPU'da 3-10 dk sürebilir. Onay akışı diğer modlarla aynı şekilde işler.",
             reply_markup=help_keyboard(), parse_mode="Markdown"
         )
 
@@ -1426,24 +1431,10 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         keyword_list = [k.strip() for k in text.split(",") if k.strip()]
         await start_job(update, ctx, keyword_list)
 
-    elif awaiting == "ugc_gen_keyword":
-        ctx.user_data["awaiting"] = None
-        if _job_info["status"] == "running":
-            await update.message.reply_text("⚠️ Zaten bir iş çalışıyor.", reply_markup=main_menu_keyboard())
-            return
-        keyword_list = [k.strip() for k in text.split(",") if k.strip()]
-        if not keyword_list:
-            await update.message.reply_text("❌ Geçersiz açıklama. Tekrar dene.", reply_markup=back_keyboard())
-            return
-        ctx.user_data["ugc_gen_keywords"] = keyword_list
-        ctx.user_data["ugc_ref_image_bytes"] = None
-        ctx.user_data["awaiting"] = "ugc_gen_image"
-        kws = ", ".join(f"`{k}`" for k in keyword_list)
+    elif awaiting == "ugc_gen_image" and text.lower().strip() not in ("atla", "skip", "hayir", "hayır", "no", "-"):
+        # Metin geldi ama görsel bekleniyor — yönlendir
         await update.message.reply_text(
-            f"✅ *Açıklama alındı:* {kws}\n\n"
-            "📸 *Referans görsel var mı?* (Opsiyonel)\n\n"
-            "• Varsa bir fotoğraf gönder — AI görsel bazlı üretir\n"
-            "• Yoksa *Atla* yaz — AI açıklama bazlı üretir",
+            "📸 Lütfen bir fotoğraf gönder veya *Atla* yaz.",
             reply_markup=back_keyboard(), parse_mode="Markdown"
         )
 
@@ -1659,23 +1650,11 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             Logger.error(f"3D Model hatası: {e}")
             Logger.error(f"Traceback:\n{traceback.format_exc()}")
-            err_str = str(e)
-            if "ZeroGPU quotas" in err_str:
-                err_text = (
-                    "❌ *Hugging Face ZeroGPU Limitine Takıldınız!*\n\n"
-                    "Bu servisi çok fazla kullanan anonim kullanıcılardan biri olduğunuz için geçici sınırlandırmaya girdiniz.\n\n"
-                    "🛠️ *Nasıl Çözülür?*\n"
-                    "1. [huggingface.co](https://huggingface.co) adresinden ücretsiz üye olun\n"
-                    "2. Ayarlardan bir 'Access Token' (Read/Write) alın\n"
-                    "3. `bot_config.txt` dosyanıza `HF_TOKEN=hf_...` satırını ekleyin\n"
-                    "4. Botu yeniden başlatın."
-                )
-            else:
-                err_text = (
-                    f"❌ *3D Model üretimi başarısız.*\n\n"
-                    f"Hata: {err_str[:200].replace(chr(96),'').replace('*','').replace('_',' ')}\n\n"
-                    f"TRELLIS Space meşgul olabilir, biraz sonra tekrar dene."
-                )
+            err_str  = str(e)
+            err_text = (
+                f"❌ *3D Model üretimi başarısız.*\n\n"
+                f"Hata: {err_str[:300].replace(chr(96),'').replace('*','').replace('_',' ')}"
+            )
             await status_msg.edit_text(
                 err_text,
                 reply_markup=InlineKeyboardMarkup([
@@ -1716,17 +1695,16 @@ async def _start_ugc_gen_job(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     global _active_task
     keyword_list = ctx.user_data.pop("ugc_gen_keywords", [])
     if not keyword_list:
-        await update.effective_message.reply_text("❌ Keyword bulunamadı, lütfen tekrar başlat.", reply_markup=main_menu_keyboard())
+        await update.effective_message.reply_text("❌ Açıklama bulunamadı, lütfen tekrar başlat.", reply_markup=main_menu_keyboard())
         return
 
     cfg    = load_roblox_config()
     cookie = load_cookie()
 
     start_msg = await update.effective_message.reply_text(
-        f"🎨 *3D UGC Üretim Başladı!*\n\n"
-        f"🔍 Açıklama(lar): `{'`, `'.join(keyword_list)}`\n"
-        f"🤖 TRELLIS AI ile model üretiliyor...\n\n"
-        f"_2-5 dakika sürebilir._",
+        "🎨 *3D UGC Üretim Başladı*\n\n"
+        f"🎯 Hedef: `{load_roblox_config().get('TARGET_PAIRS', 1)}` model\n"
+        f"🤖 TripoSR (lokal AI) ile işleniyor...",
         parse_mode="Markdown"
     )
     ctx.user_data["last_status_msg_id"] = start_msg.message_id
@@ -2278,8 +2256,9 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                     _job_info["pairs_done"] = items_found
 
                     await send(
-                        f"🤖 *{md_escape(keyword)}* icin 3D model uretiliyor... ({items_found}/{target_pairs})\n"
-                        f"Hunyuan3D-2 AI calisiyor, 2-5 dakika surebilir."
+                        f"🤖 *3D Model Üretiliyor* — {items_found}/{target_pairs}\n\n"
+                        f"📝 `{md_escape(keyword)}`\n"
+                        f"_TripoSR çalışıyor, lütfen bekle..._"
                     )
 
                     glb_path = None
@@ -2301,23 +2280,8 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                         Logger.error(f"3D üretim hatası ({keyword}): {gen_err}")
                         Logger.error(f"Traceback:\n{traceback.format_exc()}")
                         err_str = str(gen_err)
-                        safe_err = err_str[:200]
-                        if "ZeroGPU" in err_str:
-                            await send(
-                                "❌ Hugging Face ZeroGPU limiti!\n"
-                                "bot_config.txt dosyasına HF_TOKEN=hf_... ekleyip botu yeniden başlat.",
-                                parse_mode=None,
-                            )
-                            break
-                        elif "kullanil" in err_str or "space" in err_str.lower() or "Tum 3D" in err_str:
-                            await send(
-                                "❌ 3D AI Space'leri su an kullanilamiyor.\n\n"
-                                "HuggingFace altyapi sorunu — tum denenen space'ler CONFIG_ERROR veya uyumsuz API.\n"
-                                "Birkac dakika sonra tekrar dene.",
-                                parse_mode=None,
-                            )
-                            break
-                        await send(f"❌ Model uretimi basarisiz:\n{safe_err}\nAtlaniyor...", parse_mode=None)
+                        safe_err = err_str[:300]
+                        await send(f"❌ Model üretimi başarısız:\n{safe_err}\nAtlanıyor...", parse_mode=None)
                         items_found -= 1
                         _job_info["pairs_done"] = items_found
                         break
@@ -2344,6 +2308,14 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
                             f"📦 Dosya: `{glb_filename}`\n\n"
                             f"Modeli onaylıyor musun?"
                         )
+                        # Önceki durum mesajını temizle — preview tek mesaj olarak görünsün
+                        if _last_status_msg[0] is not None:
+                            try:
+                                await _last_status_msg[0].delete()
+                            except Exception:
+                                pass
+                            _last_status_msg[0] = None
+
                         try:
                             if preview_path and os.path.exists(preview_path):
                                 with open(preview_path, "rb") as _pf:
@@ -2393,6 +2365,12 @@ async def job_task(update: Update, context: ContextTypes.DEFAULT_TYPE, keyword_l
 
                     else:
                         # Onay gerekmez — direkt gönder
+                        if _last_status_msg[0] is not None:
+                            try:
+                                await _last_status_msg[0].delete()
+                            except Exception:
+                                pass
+                            _last_status_msg[0] = None
                         try:
                             if preview_path and os.path.exists(preview_path):
                                 with open(preview_path, "rb") as _pf:
@@ -2510,8 +2488,8 @@ async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     status_msg = await update.message.reply_text(
         "⏳ *Görsel alındı, 3D model üretiliyor...*\n\n"
-        "2️⃣ TRELLIS AI görselinizi 3D'ye dönüştürüyor...\n"
-        "_Bu işlem 2-5 dakika sürebilir._",
+        "🤖 TripoSR (lokal AI) görselinizi 3D'ye dönüştürüyor...\n"
+        "_CPU modunda 3-10 dakika sürebilir._",
         parse_mode="Markdown"
     )
 
@@ -2549,23 +2527,11 @@ async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         Logger.error(f"3D Image Model hatası: {e}")
-        err_str = str(e)
-        if "ZeroGPU quotas" in err_str:
-            err_text = (
-                "❌ *Hugging Face ZeroGPU Limitine Takıldınız!*\n\n"
-                "Bu servisi çok fazla kullanan anonim kullanıcılardan biri olduğunuz için geçici sınırlandırmaya girdiniz.\n\n"
-                "🛠️ *Nasıl Çözülür?*\n"
-                "1. [huggingface.co](https://huggingface.co) adresinden ücretsiz üye olun\n"
-                "2. Ayarlardan bir 'Access Token' (Read/Write) alın\n"
-                "3. `bot_config.txt` dosyanıza `HF_TOKEN=hf_...` satırını ekleyin\n"
-                "4. Botu yeniden başlatın."
-            )
-        else:
-            err_text = (
-                f"❌ *3D Model üretimi başarısız.*\n\n"
-                f"Hata: `{err_str[:200].replace('`', '')}`\n\n"
-                f"TRELLIS Space meşgul olabilir, biraz sonra tekrar dene."
-            )
+        err_str  = str(e)
+        err_text = (
+            f"❌ *3D Model üretimi başarısız.*\n\n"
+            f"Hata: `{err_str[:300].replace('`', '')}`"
+        )
         await status_msg.edit_text(
             err_text,
             reply_markup=InlineKeyboardMarkup([
